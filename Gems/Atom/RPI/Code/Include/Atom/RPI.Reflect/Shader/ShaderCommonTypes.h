@@ -7,6 +7,7 @@
  */
 #pragma once
 
+#include <Atom/RPI.Reflect/Configuration.h>
 #include <AzCore/RTTI/TypeInfo.h>
 #include <Atom/RHI.Reflect/Handle.h>
 
@@ -42,7 +43,7 @@ namespace AZ
         //! The supervariant that supports subpass inputs.
         static constexpr const char* SubpassInputSupervariantName = "SubpassInput";
 
-        static const SupervariantIndex InvalidSupervariantIndex;
+        static constexpr SupervariantIndex InvalidSupervariantIndex;
 
         enum class ShaderStageType : uint32_t
         {
@@ -55,9 +56,9 @@ namespace AZ
             RayTracing
         };
 
-        const char* ToString(ShaderStageType shaderStageType);
+        ATOM_RPI_REFLECT_API const char* ToString(ShaderStageType shaderStageType);
 
-        void ReflectShaderStageType(ReflectContext* context);
+        ATOM_RPI_REFLECT_API void ReflectShaderStageType(ReflectContext* context);
 
     } // namespace RPI
 

@@ -188,14 +188,19 @@ namespace
             throw std::runtime_error("No sequence is active");
         }
 
-        const AnimNodeType nodeType = GetIEditor()->GetMovieSystem()->GetNodeTypeFromString(nodeTypeString);
-        if (nodeType == AnimNodeType::Invalid)
+        IMovieSystem* movieSystem = AZ::Interface<IMovieSystem>::Get();
+        if (movieSystem)
         {
-            throw std::runtime_error("Invalid node type");
+            const AnimNodeType nodeType = movieSystem->GetNodeTypeFromString(nodeTypeString);
+            if (nodeType == AnimNodeType::Invalid)
+            {
+                throw std::runtime_error("Invalid node type");
+            }
+
+            CUndo undo("Create anim node");
+            pSequence->CreateSubNode(nodeName, nodeType);
         }
 
-        CUndo undo("Create anim node");
-        pSequence->CreateSubNode(nodeName, nodeType);
     }
 
     void PyTrackViewAddSelectedEntities()
@@ -321,15 +326,19 @@ namespace
             throw std::runtime_error("Couldn't find node");
         }
 
-        const CAnimParamType paramType = GetIEditor()->GetMovieSystem()->GetParamTypeFromString(paramName);
-        CTrackViewTrack* pTrack = pNode->GetTrackForParameter(paramType, index);
-        if (!pTrack)
+        IMovieSystem* movieSystem = AZ::Interface<IMovieSystem>::Get();
+        if (movieSystem)
         {
-            throw std::runtime_error("Could not find track");
-        }
+            const CAnimParamType paramType = movieSystem->GetParamTypeFromString(paramName);
+            CTrackViewTrack* pTrack = pNode->GetTrackForParameter(paramType, index);
+            if (!pTrack)
+            {
+                throw std::runtime_error("Could not find track");
+            }
 
-        CUndo undo("Delete TrackView track");
-        pNode->RemoveTrack(pTrack);
+            CUndo undo("Delete TrackView track");
+            pNode->RemoveTrack(pTrack);
+        }
     }
 
     int PyTrackViewGetNumNodes(AZStd::string_view parentDirectorName)
@@ -398,9 +407,10 @@ namespace
             throw std::runtime_error("Couldn't find node");
         }
 
-        if (GetIEditor()->GetMovieSystem())
+        IMovieSystem* movieSystem = AZ::Interface<IMovieSystem>::Get();
+        if (movieSystem)
         {
-            const CAnimParamType paramType = GetIEditor()->GetMovieSystem()->GetParamTypeFromString(paramName);
+            const CAnimParamType paramType = movieSystem->GetParamTypeFromString(paramName);
             CTrackViewTrack* pTrack = pNode->GetTrackForParameter(paramType, index);
             if (!pTrack)
             {
@@ -456,30 +466,30 @@ namespace
         break;
         case AnimValueType::Quat:
         {
-            Quat value;
+            AZ::Quaternion value;
             pTrack->GetValue(time, value);
-            Ang3 rotation(value);
-            return AZStd::make_any<AZ::Vector3>(rotation.x, rotation.y, rotation.z);
+            const AZ::Vector3 rotation = value.GetEulerDegrees();
+            return AZStd::make_any<AZ::Vector3>(rotation);
         }
         case AnimValueType::Vector:
         {
-            Vec3 value;
+            AZ::Vector3 value;
             pTrack->GetValue(time, value);
-            return AZStd::make_any<AZ::Vector3>(value.x, value.y, value.z);
+            return AZStd::make_any<AZ::Vector3>(value);
         }
         break;
         case AnimValueType::Vector4:
         {
-            Vec4 value;
+            AZ::Vector4 value;
             pTrack->GetValue(time, value);
-            return AZStd::make_any<AZ::Vector4>(value.x, value.y, value.z, value.w);
+            return AZStd::make_any<AZ::Vector4>(value);
         }
         break;
         case AnimValueType::RGB:
         {
-            Vec3 value;
+            AZ::Vector3 value;
             pTrack->GetValue(time, value);
-            return AZStd::make_any<AZ::Color>(value.x, value.y, value.z, 0.0f);
+            return AZStd::make_any<AZ::Color>(value.GetX(), value.GetY(), value.GetZ(), 0.0f);
         }
         break;
         default:

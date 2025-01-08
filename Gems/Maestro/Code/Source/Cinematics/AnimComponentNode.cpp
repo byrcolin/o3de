@@ -12,20 +12,24 @@
 #include <AzCore/Math/Color.h>
 #include <AzCore/Serialization/SerializeContext.h>
 #include <AzFramework/Components/TransformComponent.h>
+
 #include <Maestro/Bus/EditorSequenceComponentBus.h>
 #include <Maestro/Bus/SequenceComponentBus.h>
+
 #include <Maestro/Types/AnimNodeType.h>
 #include <Maestro/Types/AnimValueType.h>
 #include <Maestro/Types/AnimParamType.h>
 #include <Maestro/Types/AssetBlends.h>
 
 #include "CharacterTrack.h"
+#include "MathConversion.h"
 
 CAnimComponentNode::CAnimComponentNode(int id)
     : CAnimNode(id, AnimNodeType::Component)
     , m_componentTypeId(AZ::Uuid::CreateNull())
     , m_componentId(AZ::InvalidComponentId)
     , m_skipComponentAnimationUpdates(false)
+    , m_movieSystem(AZ::Interface<IMovieSystem>::Get())
 {
 }
 
@@ -390,7 +394,8 @@ void CAnimComponentNode::SetPos(float time, const AZ::Vector3& pos)
 {
     if (m_componentTypeId == AZ::Uuid(AZ::EditorTransformComponentTypeId) || m_componentTypeId == AzFramework::TransformComponent::TYPEINFO_Uuid())
     {
-        bool bDefault = !(gEnv->pMovieSystem->IsRecording() && (GetParent()->GetFlags() & eAnimNodeFlags_EntitySelected)); // Only selected nodes can be recorded
+
+        bool bDefault = !(m_movieSystem->IsRecording() && (GetParent()->GetFlags() & eAnimNodeFlags_EntitySelected)); // Only selected nodes can be recorded
 
         IAnimTrack* posTrack = GetTrackForParameter(AnimParamType::Position);
         if (posTrack)
@@ -427,7 +432,7 @@ void CAnimComponentNode::SetRotate(float time, const AZ::Quaternion& rotation)
 {
     if (m_componentTypeId == AZ::Uuid(AZ::EditorTransformComponentTypeId) || m_componentTypeId == AzFramework::TransformComponent::TYPEINFO_Uuid())
     {
-        bool bDefault = !(gEnv->pMovieSystem->IsRecording() && (GetParent()->GetFlags() & eAnimNodeFlags_EntitySelected)); // Only selected nodes can be recorded
+        bool bDefault = !(m_movieSystem->IsRecording() && (GetParent()->GetFlags() & eAnimNodeFlags_EntitySelected)); // Only selected nodes can be recorded
 
         IAnimTrack* rotTrack = GetTrackForParameter(AnimParamType::Rotation);
         if (rotTrack)
@@ -454,7 +459,9 @@ Quat CAnimComponentNode::GetRotate(float time)
     IAnimTrack* rotTrack = GetTrackForParameter(AnimParamType::Rotation);
     if (rotTrack != nullptr && rotTrack->GetNumKeys() > 0)
     {
-        rotTrack->GetValue(time, worldRot);
+        AZ::Quaternion value;
+        rotTrack->GetValue(time, value);
+        worldRot = AZQuaternionToLYQuaternion(value);
 
         // Track values are always stored as relative to the parent (local), so convert to world.
         ConvertBetweenWorldAndLocalRotation(worldRot, eTransformConverstionDirection_toWorldSpace);
@@ -486,7 +493,7 @@ void CAnimComponentNode::SetScale(float time, const AZ::Vector3& scale)
 {
     if (m_componentTypeId == AZ::Uuid(AZ::EditorTransformComponentTypeId) || m_componentTypeId == AzFramework::TransformComponent::TYPEINFO_Uuid())
     {
-        bool bDefault = !(gEnv->pMovieSystem->IsRecording() && (GetParent()->GetFlags() & eAnimNodeFlags_EntitySelected)); // Only selected nodes can be recorded
+        bool bDefault = !(m_movieSystem->IsRecording() && (GetParent()->GetFlags() & eAnimNodeFlags_EntitySelected)); // Only selected nodes can be recorded
 
         IAnimTrack* scaleTrack = GetTrackForParameter(AnimParamType::Scale);
         if (scaleTrack)
@@ -763,14 +770,14 @@ void CAnimComponentNode::InitializeTrackDefaultValue(IAnimTrack* pTrack, const C
                     Maestro::SequenceComponentRequestBus::Event(m_pSequence->GetSequenceEntityId(), &Maestro::SequenceComponentRequestBus::Events::GetAnimatedPropertyValue, defaultValue, GetParentAzEntityId(), address);
                     defaultValue.GetValue(vector3Value);
 
-                    pTrack->SetValue(0, Vec3(vector3Value.GetX(), vector3Value.GetY(), vector3Value.GetZ()), true);
+                    pTrack->SetValue(0, vector3Value, true);
                     break;
                 }
                 case AnimValueType::Quat:
                 {
                     Maestro::SequenceComponentRequests::AnimatedQuaternionValue defaultValue(AZ::Quaternion::CreateIdentity());
                     Maestro::SequenceComponentRequestBus::Event(m_pSequence->GetSequenceEntityId(), &Maestro::SequenceComponentRequestBus::Events::GetAnimatedPropertyValue, defaultValue, GetParentAzEntityId(), address);
-                    pTrack->SetValue(0, Quat(defaultValue.GetQuaternionValue()), true);
+                    pTrack->SetValue(0, defaultValue.GetQuaternionValue(), true);
                     break;
                 }
                 case AnimValueType::RGB:
@@ -780,8 +787,9 @@ void CAnimComponentNode::InitializeTrackDefaultValue(IAnimTrack* pTrack, const C
 
                     Maestro::SequenceComponentRequestBus::Event(m_pSequence->GetSequenceEntityId(), &Maestro::SequenceComponentRequestBus::Events::GetAnimatedPropertyValue, defaultValue, GetParentAzEntityId(), address);
                     defaultValue.GetValue(vector3Value);
+                    vector3Value = vector3Value.GetClamp(AZ::Vector3::CreateZero(), AZ::Vector3::CreateOne());
 
-                    pTrack->SetValue(0, Vec3(clamp_tpl((float)vector3Value.GetX(), .0f, 1.0f), clamp_tpl((float)vector3Value.GetY(), .0f, 1.0f), clamp_tpl((float)vector3Value.GetZ(), .0f, 1.0f)), /*setDefault=*/ true, /*applyMultiplier=*/ true);
+                    pTrack->SetValue(0, vector3Value, /*setDefault=*/ true, /*applyMultiplier=*/ true);
                     break;
                 }
                 case AnimValueType::Bool:
@@ -898,32 +906,35 @@ void CAnimComponentNode::Animate(SAnimContext& ac)
                         case AnimValueType::RGB:
                         {
                             float tolerance = AZ::Constants::FloatEpsilon;
-                            Vec3 vec3Value(.0f, .0f, .0f);
-                            pTrack->GetValue(ac.time, vec3Value, /*applyMultiplier= */ true);
-                            AZ::Vector3 vector3Value(vec3Value.x, vec3Value.y, vec3Value.z);
+                            AZ::Vector3 vec;
+                            pTrack->GetValue(ac.time, vec, /*applyMultiplier= */ true);
 
                             if (pTrack->GetValueType() == AnimValueType::RGB)
                             {
-                                vec3Value.x = clamp_tpl(vec3Value.x, 0.0f, 1.0f);
-                                vec3Value.y = clamp_tpl(vec3Value.y, 0.0f, 1.0f);
-                                vec3Value.z = clamp_tpl(vec3Value.z, 0.0f, 1.0f);
-
+                                vec = vec.GetClamp(AZ::Vector3::CreateZero(), AZ::Vector3::CreateOne());
                                 // set tolerance to just under 1 unit in normalized RGB space
                                 tolerance = (1.0f - AZ::Constants::FloatEpsilon) / 255.0f;
                             }
 
-                            Maestro::SequenceComponentRequests::AnimatedVector3Value value(AZ::Vector3(vec3Value.x, vec3Value.y, vec3Value.z));
+                            Maestro::SequenceComponentRequests::AnimatedVector3Value value(vec);
+                            Maestro::SequenceComponentRequests::AnimatedVector3Value prevValue(vec);
+                            bool wasInvoked = false;
+                            const AZ::EntityId& sequenceEntityId = m_pSequence->GetSequenceEntityId();
+                            Maestro::SequenceComponentRequestBus::EventResult(wasInvoked, sequenceEntityId, &Maestro::SequenceComponentRequestBus::Events::GetAnimatedPropertyValue, prevValue, GetParentAzEntityId(), animatableAddress);
 
-                            Maestro::SequenceComponentRequests::AnimatedVector3Value prevValue(AZ::Vector3(vec3Value.x, vec3Value.y, vec3Value.z));
-                            Maestro::SequenceComponentRequestBus::Event(m_pSequence->GetSequenceEntityId(), &Maestro::SequenceComponentRequestBus::Events::GetAnimatedPropertyValue, prevValue, GetParentAzEntityId(), animatableAddress);
+                            if (!wasInvoked)
+                            {
+                                AZ_Trace("CAnimComponentNode::Animate", "GetAnimatedPropertyValue failed for %s", sequenceEntityId.ToString().c_str());
+                            }
+
                             AZ::Vector3 vector3PrevValue;
                             prevValue.GetValue(vector3PrevValue);
 
                             // Check sub-tracks for keys. If there are none, use the prevValue for that track (essentially making a non-keyed track a no-op)
-                            vector3Value.Set(pTrack->GetSubTrack(0)->HasKeys() ? vector3Value.GetX() : vector3PrevValue.GetX(),
-                                pTrack->GetSubTrack(1)->HasKeys() ? vector3Value.GetY() : vector3PrevValue.GetY(),
-                                pTrack->GetSubTrack(2)->HasKeys() ? vector3Value.GetZ() : vector3PrevValue.GetZ());
-                            value.SetValue(vector3Value);
+                            vec.Set(pTrack->GetSubTrack(0)->HasKeys() ? vec.GetX() : vector3PrevValue.GetX(),
+                                pTrack->GetSubTrack(1)->HasKeys() ? vec.GetY() : vector3PrevValue.GetY(),
+                                pTrack->GetSubTrack(2)->HasKeys() ? vec.GetZ() : vector3PrevValue.GetZ());
+                            value.SetValue(vec);
 
                             if (!value.IsClose(prevValue, tolerance))
                             {

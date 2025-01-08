@@ -9,6 +9,7 @@
 
 #include <Atom/RPI.Public/Base.h>
 #include <Atom/RPI.Public/Buffer/Buffer.h>
+#include <Atom/RPI.Public/Configuration.h>
 #include <Atom/RPI.Public/GpuQuery/GpuQuerySystemInterface.h>
 #include <Atom/RPI.Reflect/Image/Image.h>
 #include <Atom/RPI.Public/Image/AttachmentImage.h>
@@ -100,7 +101,7 @@ namespace AZ
         //! a PassTemplate, or a PassRequest. To register your pass class with the PassFactory,
         //! you'll need to write a static create method (see ParentPass and RenderPass for examples)
         //! and register this create method with the PassFactory.
-        class Pass
+        class ATOM_RPI_PUBLIC_API Pass
             : public AZStd::intrusive_base
         {
             AZ_RPI_PASS(Pass);
@@ -207,8 +208,11 @@ namespace AZ
             //! Adds an attachment binding to the list of this Pass' attachment bindings
             void AddAttachmentBinding(PassAttachmentBinding attachmentBinding);
 
-            // Binds all attachments from the pass 
-            void DeclareAttachmentsToFrameGraph(RHI::FrameGraphInterface frameGraph, PassSlotType slotType = PassSlotType::Uninitialized) const;
+            // Binds all attachments from the pass
+            void DeclareAttachmentsToFrameGraph(
+                RHI::FrameGraphInterface frameGraph,
+                PassSlotType slotType = PassSlotType::Uninitialized,
+                RHI::ScopeAttachmentAccess accessMask = RHI::ScopeAttachmentAccess::ReadWrite) const;
 
             // Returns a reference to the N-th input binding, where N is the index passed to the function
             PassAttachmentBinding& GetInputBinding(uint32_t index);
@@ -325,6 +329,9 @@ namespace AZ
             PassState GetPassState() const { return m_state; }
 
             //! Alter the connection of an Input or InputOutput attachment
+            void ChangeConnection(const Name& localSlot, const Name& passName, const Name& attachment, RenderPipeline* pipeline);
+
+            //! Alter the connection of an Input or InputOutput attachment
             void ChangeConnection(const Name& localSlot, Pass* pass, const Name& attachment);
 
             // Update all bindings on this pass that are connected to bindings on other passes
@@ -336,11 +343,11 @@ namespace AZ
             // Update output bindings on this pass that are connected to bindings on other passes
             void UpdateConnectedOutputBindings();
 
-        protected:
-            explicit Pass(const PassDescriptor& descriptor);
-
             // Creates a pass descriptor for creating a duplicate pass. Used for hot reloading.
             PassDescriptor GetPassDescriptor() const;
+
+        protected:
+            explicit Pass(const PassDescriptor& descriptor);
 
             // Imports owned imported attachments into the FrameGraph
             // Called in pass's frame prepare function
@@ -434,7 +441,8 @@ namespace AZ
             AZ::Name GetSuperVariantName() const;
 
             // Replaces all SubpassInput attachment for Shader attachments.
-            void ReplaceSubpassInputs();
+            // @param supportedTypes The subpass input supported types by the device
+            void ReplaceSubpassInputs(RHI::SubpassInputSupportType supportedTypes);
 
             // --- Protected Members ---
 
@@ -557,7 +565,7 @@ namespace AZ
             
             // For read back attachment
             AZStd::shared_ptr<AttachmentReadback> m_attachmentReadback;
-            PassAttachmentReadbackOption m_readbackOption;
+            PassAttachmentReadbackOption m_readbackOption = PassAttachmentReadbackOption::Input;
 
             // For image attachment preview
             AZStd::weak_ptr<ImageAttachmentCopy> m_attachmentCopy;
@@ -699,7 +707,7 @@ namespace AZ
         };
 
         //! Struct used to return results from Pass hierarchy validation
-        struct PassValidationResults
+        struct ATOM_RPI_PUBLIC_API PassValidationResults
         {
             bool IsValid();
             void PrintValidationIfError();

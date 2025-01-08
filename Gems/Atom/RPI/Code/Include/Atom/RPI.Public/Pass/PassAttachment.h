@@ -9,9 +9,8 @@
 
 #include <AtomCore/Instance/Instance.h>
 #include <AtomCore/Instance/InstanceData.h>
-
+#include <Atom/RPI.Public/Configuration.h>
 #include <Atom/RHI.Reflect/ShaderInputNameIndex.h>
-
 #include <Atom/RPI.Reflect/Pass/PassAttachmentReflect.h>
 
 namespace AZ
@@ -23,8 +22,8 @@ namespace AZ
         class RenderPipeline;
 
         //! Describes an attachment to be used by a Pass.
-        struct PassAttachment final
-            : AZStd::intrusive_refcount<AZStd::atomic_uint, AZStd::intrusive_default_delete>
+        struct ATOM_RPI_PUBLIC_API PassAttachment final
+            : AZStd::intrusive_base
         {
             AZ_CLASS_ALLOCATOR(PassAttachment, SystemAllocator);
 
@@ -135,7 +134,7 @@ namespace AZ
         //! that binding. In this case, the attachment pointed to by the connected binding will be used.
         //! Example: an input binding can point to another Pass's output binding, in which case the
         //! input binding will refer to the same attachment at the connected output binding.
-        struct PassAttachmentBinding final
+        struct ATOM_RPI_PUBLIC_API PassAttachmentBinding final
         {
             PassAttachmentBinding() { };
             PassAttachmentBinding(const PassSlot& slot);
@@ -186,8 +185,8 @@ namespace AZ
             //! this is the fallback we will use when the pass is disabled.
             PassAttachmentBinding* m_fallbackBinding = nullptr;
 
-            static const int16_t ShaderInputAutoBind = -1;
-            static const int16_t ShaderInputNoBind = -2;
+            static constexpr int16_t ShaderInputAutoBind = -1;
+            static constexpr int16_t ShaderInputNoBind = -2;
 
             //! This tracks which SRG slot to bind the attachment to. This value gets applied in RenderPass::BindPassSrg
             //! after being converted to either an RHI::ShaderInputImageIndex or an RHI::ShaderInputBufferIndex using

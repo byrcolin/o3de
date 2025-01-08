@@ -450,9 +450,18 @@ namespace AZ
 
                     if (RHI::CheckBitsAny(imageAspects, RHI::ImageAspectFlags::DepthStencil))
                     {
+                        if (imageAspects == RHI::ImageAspectFlags::Depth)
+                        {
+                            return VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
+                        }
+                        else if (imageAspects == RHI::ImageAspectFlags::Stencil)
+                        {
+                            return VK_IMAGE_LAYOUT_STENCIL_READ_ONLY_OPTIMAL;
+                        }
+
                         return VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
                     }
-                        
+
                     return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
                 }
             case RHI::ScopeAttachmentUsage::Copy:
@@ -490,6 +499,7 @@ namespace AZ
             case RHI::HeapMemoryLevel::Host:
                 allocInfo.flags |= VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
                 allocInfo.requiredFlags |= VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+                allocInfo.requiredFlags |= VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
                 break;
             case RHI::HeapMemoryLevel::Device:
                 allocInfo.requiredFlags |= VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;

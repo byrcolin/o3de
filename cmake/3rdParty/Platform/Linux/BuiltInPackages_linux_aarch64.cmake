@@ -17,7 +17,7 @@ ly_associate_package(PACKAGE_NAME xxhash-0.7.4-rev1-multiplatform               
 
 # platform-specific:
 ly_associate_package(PACKAGE_NAME expat-2.4.2-rev2-linux-aarch64                             TARGETS expat                       PACKAGE_HASH 934a535c1492d11906789d7ddf105b1a530cf8d8fb126063ffde16c5caeb0179)
-ly_associate_package(PACKAGE_NAME assimp-5.4.3-rev1-linux-aarch64                            TARGETS assimplib                   PACKAGE_HASH 6f3882d9c17071f5014667aff868bd9f5b899fe67f51180bbb2e7137c2bf49c2)
+ly_associate_package(PACKAGE_NAME assimp-5.4.3-rev3-linux-aarch64                            TARGETS assimp                      PACKAGE_HASH e8e434eddd6ef418c38ce69c243b751c800d02e7691fe779144f5d5cb8716732)
 ly_associate_package(PACKAGE_NAME AWSNativeSDK-1.11.288-rev1-linux-aarch64                   TARGETS AWSNativeSDK                PACKAGE_HASH 55791343d3aaa07a4242190cc9d6f1f2448c55125839255bdec25efdbab46efa)
 ly_associate_package(PACKAGE_NAME cityhash-1.1-rev1-linux-aarch64                            TARGETS cityhash                    PACKAGE_HASH c4fafa13add81c6ca03338462af78eabbdea917de68c599f11c4a36b0982cec2)
 ly_associate_package(PACKAGE_NAME tiff-4.2.0.15-rev3-linux-aarch64                           TARGETS TIFF                        PACKAGE_HASH 429461014b21a530dcad597c2d91072ae39d937a04b7bbbf5c34491c41767f7f)
@@ -25,7 +25,6 @@ ly_associate_package(PACKAGE_NAME freetype-2.11.1-rev1-linux-aarch64            
 ly_associate_package(PACKAGE_NAME Lua-5.4.4-rev1-linux-aarch64                               TARGETS Lua                         PACKAGE_HASH 4d30067fc494ac27acd72b0bf18099c19c0a44ac9bd46b23db66ad780e72374a)
 ly_associate_package(PACKAGE_NAME mcpp-2.7.2_az.1-rev1-linux-aarch64                         TARGETS mcpp                        PACKAGE_HASH 817d31b94d1217b6e47bd5357b3a07a79ab6aa93452c65ff56831d0590c5169d)
 ly_associate_package(PACKAGE_NAME mikkelsen-1.0.0.4-linux-aarch64                            TARGETS mikkelsen                   PACKAGE_HASH 62f3f316c971239a2b86d7c47a68fee9be744de3a4f9b00533b32f33a4764f8b)
-ly_associate_package(PACKAGE_NAME googletest-1.8.1-rev4-linux-aarch64                        TARGETS googletest                  PACKAGE_HASH 01e236a9b5992da2494227ce23ba2f9aa6ea73a232aeceb3606fbf41954dc6d0)
 ly_associate_package(PACKAGE_NAME googlebenchmark-1.7.0-rev1-linux-aarch64                   TARGETS GoogleBenchmark             PACKAGE_HASH 06fbfeaba2aeae20197da631019e52105dc1f69e702151a76c6aba2c27c03acb)
 ly_associate_package(PACKAGE_NAME qt-5.15.2-rev9-linux-aarch64                               TARGETS Qt                          PACKAGE_HASH da80840ecd3f7a074edecbb3dedb1ff36c568cfe4943e18d9559e9fca9f151bc)
 ly_associate_package(PACKAGE_NAME png-1.6.37-rev2-linux-aarch64                              TARGETS PNG                         PACKAGE_HASH fcf646c1b1b4163000efdb56d7c8f086b6ce0a520da5c8d3ffce4e1329ae798a)

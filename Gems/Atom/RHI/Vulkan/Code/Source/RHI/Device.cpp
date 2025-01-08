@@ -199,14 +199,6 @@ namespace AZ
             auto depthClipEnabled = physicalDevice.GetPhysicalDeviceDepthClipEnableFeatures();
             auto rayQueryFeatures = physicalDevice.GetRayQueryFeatures();
             auto shaderImageAtomicInt64 = physicalDevice.GetShaderImageAtomicInt64Features();
-            auto subpassMergeFeedback = physicalDevice.GetPhysicalSubpassMergeFeedbackFeatures();
-#if !defined(AZ_RELEASE_BUILD)
-            subpassMergeFeedback.subpassMergeFeedback = false;
-#endif
-            if (!subpassMergeFeedback.subpassMergeFeedback)
-            {
-                physicalDevice.DisableOptionalDeviceExtension(OptionalDeviceExtension::SubpassMergeFeedback);
-            }
 
             VkPhysicalDeviceRobustness2FeaturesEXT robustness2 = {};
             robustness2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT;
@@ -217,18 +209,22 @@ namespace AZ
             rayQueryFeatures.pNext = nullptr;
             shaderImageAtomicInt64.pNext = nullptr;
             robustness2.pNext = nullptr;
-            subpassMergeFeedback.pNext = nullptr;
 
             AppendVkStruct(
-                chainInit,
-                {
-                    &bufferDeviceAddressFeatures,
-                    &depthClipEnabled,
-                    &rayQueryFeatures,
-                    &shaderImageAtomicInt64,
-                    &robustness2,
-                    &subpassMergeFeedback
-                });
+                chainInit, { &bufferDeviceAddressFeatures, &depthClipEnabled, &rayQueryFeatures, &shaderImageAtomicInt64, &robustness2 });
+
+            auto subpassMergeFeedback = physicalDevice.GetPhysicalSubpassMergeFeedbackFeatures();
+
+#if !defined(AZ_RELEASE_BUILD)
+            subpassMergeFeedback.subpassMergeFeedback = false;
+#endif
+            if (!subpassMergeFeedback.subpassMergeFeedback &&
+                physicalDevice.IsOptionalDeviceExtensionSupported(OptionalDeviceExtension::SubpassMergeFeedback))
+            {
+                physicalDevice.DisableOptionalDeviceExtension(OptionalDeviceExtension::SubpassMergeFeedback);
+                subpassMergeFeedback.pNext = nullptr;
+                AppendVkStruct(chainInit, &subpassMergeFeedback);
+            }
 
             auto fragmenDensityMapFeatures = physicalDevice.GetPhysicalDeviceFragmentDensityMapFeatures();
             auto fragmenShadingRateFeatures = physicalDevice.GetPhysicalDeviceFragmentShadingRateFeatures();
@@ -502,7 +498,8 @@ namespace AZ
                 // This will not allocate or bind memory.
                 ImageCreateInfo createInfo = BuildImageCreateInfo(descriptor);
                 VkImage vkImage = VK_NULL_HANDLE;
-                VkResult vkResult = GetContext().CreateImage(GetNativeDevice(), &createInfo.m_vkCreateInfo, VkSystemAllocator::Get(), &vkImage);
+                VkResult vkResult =
+                    GetContext().CreateImage(GetNativeDevice(), createInfo.GetCreateInfo(), VkSystemAllocator::Get(), &vkImage);
                 AssertSuccess(vkResult);
 
                 VkMemoryRequirements memoryRequirements = {};
@@ -529,7 +526,8 @@ namespace AZ
                 // This will not allocate or bind memory.
                 BufferCreateInfo createInfo = BuildBufferCreateInfo(descriptor);
                 VkBuffer vkBuffer = VK_NULL_HANDLE;
-                VkResult vkResult = GetContext().CreateBuffer(GetNativeDevice(), &createInfo.m_vkCreateInfo, VkSystemAllocator::Get(), &vkBuffer);
+                VkResult vkResult =
+                    GetContext().CreateBuffer(GetNativeDevice(), createInfo.GetCreateInfo(), VkSystemAllocator::Get(), &vkBuffer);
                 AssertSuccess(vkResult);
 
                 VkMemoryRequirements memoryRequirements = {};
@@ -868,6 +866,13 @@ namespace AZ
             AZStd::set<RHI::Format> formats;
             for (const VkSurfaceFormatKHR& surfaceFormat : surfaceFormats)
             {
+                // Don't expose formats for HDR output when the extension is missing
+                // This can happen on Linux with Wayland.
+                if (surfaceFormat.format == VK_FORMAT_A2R10G10B10_UNORM_PACK32 &&
+                    m_loaderContext->GetContext().SetHdrMetadataEXT == nullptr)
+                {
+                    continue;
+                }
                 formats.insert(ConvertFormat(surfaceFormat.format));
             }
             formatsList.assign(formats.begin(), formats.end());
@@ -1142,8 +1147,7 @@ namespace AZ
             m_features.m_indirectDrawCountBufferSupported = physicalDevice.IsFeatureSupported(DeviceFeature::DrawIndirectCount);
             m_features.m_indirectDispatchCountBufferSupported = false;
             m_features.m_indirectDrawStartInstanceLocationSupported = m_enabledDeviceFeatures.drawIndirectFirstInstance == VK_TRUE;
-            m_features.m_renderTargetSubpassInputSupport = RHI::SubpassInputSupportType::Native;
-            m_features.m_depthStencilSubpassInputSupport = RHI::SubpassInputSupportType::Native;
+            m_features.m_subpassInputSupport = RHI::SubpassInputSupportType::Color | RHI::SubpassInputSupportType::DepthStencil;
 
             const VkPhysicalDeviceProperties& deviceProperties = physicalDevice.GetPhysicalDeviceProperties();
             // Our sparse image implementation requires the device support sparse binding and particle residency for 2d and 3d images
@@ -1353,6 +1357,17 @@ namespace AZ
             allocatorInfo.pVulkanFunctions = &vulkanFunctions;
             allocatorInfo.pAllocationCallbacks = VkSystemAllocator::Get();
 
+            VkExternalMemoryHandleTypeFlagsKHR externalHandleTypeFlags = 0;
+            ExternalHandleRequirementBus::Broadcast(
+                &ExternalHandleRequirementBus::Events::CollectExternalMemoryRequirements, externalHandleTypeFlags);
+            AZStd::vector<VkExternalMemoryHandleTypeFlagsKHR> externalTypes;
+            if (externalHandleTypeFlags != 0)
+            {
+                externalTypes = AZStd::vector<VkExternalMemoryHandleTypeFlagsKHR>(
+                    physicalDevice.GetMemoryProperties().memoryTypeCount, externalHandleTypeFlags);
+                allocatorInfo.pTypeExternalMemoryHandleTypes = externalTypes.data();
+            }
+
             if (GetContext().GetBufferMemoryRequirements2 && GetContext().GetImageMemoryRequirements2)
             {
                 allocatorInfo.flags |= VMA_ALLOCATOR_CREATE_KHR_DEDICATED_ALLOCATION_BIT;
@@ -1497,7 +1512,7 @@ namespace AZ
             AZ_Assert(descriptor.m_sharedQueueMask != RHI::HardwareQueueClassMask::None, "Invalid shared queue mask");
             createInfo.m_queueFamilyIndices = GetCommandQueueContext().GetQueueFamilyIndices(descriptor.m_sharedQueueMask);
 
-            auto& vkCreateInfo = createInfo.m_vkCreateInfo;
+            VkBufferCreateInfo vkCreateInfo = {};
             vkCreateInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
             vkCreateInfo.pNext = nullptr;
             vkCreateInfo.flags = 0;
@@ -1514,6 +1529,20 @@ namespace AZ
                 : VK_SHARING_MODE_CONCURRENT;
             vkCreateInfo.queueFamilyIndexCount = static_cast<uint32_t>(createInfo.m_queueFamilyIndices.size());
             vkCreateInfo.pQueueFamilyIndices = createInfo.m_queueFamilyIndices.empty() ? nullptr : createInfo.m_queueFamilyIndices.data();
+            createInfo.SetCreateInfo(vkCreateInfo);
+
+            VkExternalMemoryHandleTypeFlagsKHR externalHandleTypeFlags = 0;
+            ExternalHandleRequirementBus::Broadcast(
+                &ExternalHandleRequirementBus::Events::CollectExternalMemoryRequirements, externalHandleTypeFlags);
+            if (externalHandleTypeFlags != 0)
+            {
+                VkExternalMemoryBufferCreateInfo externalInfo = {};
+                externalInfo.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO;
+                externalInfo.handleTypes = externalHandleTypeFlags;
+                externalInfo.pNext = nullptr;
+                createInfo.SetExternalCreateInfo(externalInfo);
+            }
+
             return createInfo;
         }
 
@@ -1523,7 +1552,7 @@ namespace AZ
 
             ImageCreateInfo createInfo;
 
-            auto& vkCreateInfo = createInfo.m_vkCreateInfo;
+            VkImageCreateInfo vkCreateInfo = {};
             vkCreateInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
             vkCreateInfo.pNext = nullptr;
             vkCreateInfo.format = ConvertFormat(descriptor.m_format);
@@ -1572,6 +1601,19 @@ namespace AZ
             vkCreateInfo.queueFamilyIndexCount = static_cast<uint32_t>(createInfo.m_queueFamilyIndices.size());
             vkCreateInfo.pQueueFamilyIndices = createInfo.m_queueFamilyIndices.empty() ? nullptr : createInfo.m_queueFamilyIndices.data();
             vkCreateInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            createInfo.SetCreateInfo(vkCreateInfo);
+
+            VkExternalMemoryHandleTypeFlagsKHR externalHandleTypeFlags = 0;
+            ExternalHandleRequirementBus::Broadcast(
+                &ExternalHandleRequirementBus::Events::CollectExternalMemoryRequirements, externalHandleTypeFlags);
+            if (externalHandleTypeFlags != 0)
+            {
+                VkExternalMemoryImageCreateInfo externalInfo = {};
+                externalInfo.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
+                externalInfo.handleTypes = externalHandleTypeFlags;
+                externalInfo.pNext = nullptr;
+                createInfo.SetExternalCreateInfo(externalInfo);
+            }
 
             return createInfo;
         }

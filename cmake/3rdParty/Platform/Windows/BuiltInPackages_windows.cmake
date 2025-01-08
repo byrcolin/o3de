@@ -19,7 +19,7 @@ ly_associate_package(PACKAGE_NAME xxhash-0.7.4-rev1-multiplatform               
 
 # platform-specific:
 ly_associate_package(PACKAGE_NAME expat-2.4.2-rev2-windows                              TARGETS expat                       PACKAGE_HASH 748d08f21f5339757059a7887e72b52d15e954c549245c638b0b05bd5961e307)
-ly_associate_package(PACKAGE_NAME assimp-5.4.3-rev1-windows                             TARGETS assimplib                   PACKAGE_HASH 3142a3868fe3a5a92b5d1395b47e4faf758b7ca3feb3fa96d394dae44695c809)
+ly_associate_package(PACKAGE_NAME assimp-5.4.3-rev3-windows                             TARGETS assimp                      PACKAGE_HASH 014f835db2921b0cad8569e1056636788fe7a7c3449d6d9bce6f8d2c6311ea50)
 ly_associate_package(PACKAGE_NAME OpenEXR-3.1.3-rev5-windows                            TARGETS OpenEXR Imath               PACKAGE_HASH bff6dc78412bb1b04ded243753bee36e9229fdaf9a9e1fa85b1059238fba4c9b)
 ly_associate_package(PACKAGE_NAME DirectXShaderCompilerDxc-1.7.2308-o3de-rev2-windows   TARGETS DirectXShaderCompilerDxc    PACKAGE_HASH 1002eaef605abf2f5080f1edb7efbdad36c5c53e27ae17957b736ab3cdc61b36)
 ly_associate_package(PACKAGE_NAME SPIRVCross-1.3.275.0-rev1-windows                     TARGETS SPIRVCross                  PACKAGE_HASH 4c18c95834ebff103ff7f39fc814d65276668d2405d91376290f69723f2ab0f7)
@@ -29,7 +29,6 @@ ly_associate_package(PACKAGE_NAME AWSNativeSDK-1.11.288-rev1-windows            
 ly_associate_package(PACKAGE_NAME Lua-5.4.4-rev1-windows                                TARGETS Lua                         PACKAGE_HASH 8ac853288712267ec9763be152a9274ce87b54728b8add97e2ba73c0fd5a0345)
 ly_associate_package(PACKAGE_NAME mcpp-2.7.2_az.2-rev1-windows                          TARGETS mcpp                        PACKAGE_HASH 794789aba639bfe2f4e8fcb4424d679933dd6290e523084aa0a4e287ac44acb2)
 ly_associate_package(PACKAGE_NAME mikkelsen-1.0.0.4-windows                             TARGETS mikkelsen                   PACKAGE_HASH 872c4d245a1c86139aa929f2b465b63ea4ea55b04ced50309135dd4597457a4e)
-ly_associate_package(PACKAGE_NAME googletest-1.8.1-rev4-windows                         TARGETS googletest                  PACKAGE_HASH 7e8f03ae8a01563124e3daa06386f25a2b311c10bb95bff05cae6c41eff83837)
 ly_associate_package(PACKAGE_NAME googlebenchmark-1.7.0-rev1-windows                    TARGETS GoogleBenchmark             PACKAGE_HASH a19e41670b46ec1676b51f9d6ad862443c56415d61b505383c19909fb02feb9e)
 ly_associate_package(PACKAGE_NAME d3dx12-headers-rev1-windows                           TARGETS d3dx12                      PACKAGE_HASH 088c637159fba4a3e4c0cf08fb4921906fd4cca498939bd239db7c54b5b2f804)
 ly_associate_package(PACKAGE_NAME pyside2-5.15.2.1-py3.10-rev6-windows                  TARGETS pyside2                     PACKAGE_HASH 6c4e99af920cda5f34dc2a495c42f38381179543f062dc72a12147a8a660a681)

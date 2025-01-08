@@ -12,6 +12,7 @@ set(FILES
     Include/Atom/RPI.Public/AssetTagBus.h
     Include/Atom/RPI.Public/Base.h
     Include/Atom/RPI.Public/BlockCompression.h
+    Include/Atom/RPI.Public/Configuration.h
     Include/Atom/RPI.Public/Culling.h
     Include/Atom/RPI.Public/FeatureProcessor.h
     Include/Atom/RPI.Public/FeatureProcessorFactory.h
@@ -110,6 +111,7 @@ set(FILES
     Include/Atom/RPI.Public/XR/XRRenderingInterface.h
     Include/Atom/RPI.Public/XR/XRSpaceNotificationBus.h
     Source/RPI.Public/Culling.cpp
+    Source/RPI.Public/DllMain.cpp
     Source/RPI.Public/FeatureProcessor.cpp
     Source/RPI.Public/FeatureProcessorFactory.cpp
     Source/RPI.Public/MeshDrawPacket.cpp

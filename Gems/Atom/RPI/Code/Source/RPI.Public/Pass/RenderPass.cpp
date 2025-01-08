@@ -80,7 +80,7 @@ namespace AZ
             // due to some pass breaking the subpass chaining.
             if (m_flags.m_hasSubpassInput && subpassLayoutBuilder.GetSubpassIndex() == 0)
             {
-                ReplaceSubpassInputs();
+                ReplaceSubpassInputs(RHI::SubpassInputSupportType::None);
             }
 
             for (size_t slotIndex = 0; slotIndex < m_attachmentBindings.size(); ++slotIndex)
@@ -267,7 +267,10 @@ namespace AZ
 
         void RenderPass::FrameBeginInternal(FramePrepareParams params)
         {
-            m_timestampResult = AZ::RPI::TimestampResult();
+            if (IsTimestampQueryEnabled())
+            {
+                m_timestampResult = AZ::RPI::TimestampResult();
+            }
 
             // the pass may potentially migrate between devices dynamically at runtime so the deviceIndex is updated every frame.
             if (GetScopeId().IsEmpty() || (ScopeProducer::GetDeviceIndex() != Pass::GetDeviceIndex()))

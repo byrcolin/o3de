@@ -16,6 +16,7 @@
 #include "CharacterTrack.h"
 #include "AnimSplineTrack.h"
 #include "BoolTrack.h"
+#include "MathConversion.h"
 #include "SelectTrack.h"
 #include "EventTrack.h"
 #include "SoundTrack.h"
@@ -674,6 +675,7 @@ CAnimNode::CAnimNode(const CAnimNode& other)
     , m_pParentNode(other.m_pParentNode)
     , m_nLoadedParentNodeId(other.m_nLoadedParentNodeId)
     , m_expanded(other.m_expanded)
+    , m_movieSystem(other.m_movieSystem)
 {
     // m_bIgnoreSetParam not copied
 }
@@ -684,6 +686,7 @@ CAnimNode::CAnimNode(const int id, AnimNodeType nodeType)
     , m_id(id)
     , m_parentNodeId(0)
     , m_nodeType(nodeType)
+    , m_movieSystem(AZ::Interface<IMovieSystem>::Get())
 {
     m_pOwner = 0;
     m_pSequence = 0;
@@ -692,11 +695,14 @@ CAnimNode::CAnimNode(const int id, AnimNodeType nodeType)
     m_pParentNode = 0;
     m_nLoadedParentNodeId = 0;
     m_expanded = true;
+
+    AZ_Trace("CAnimNode", "CAnimNode type %i", static_cast<int>(nodeType));
 }
 
 //////////////////////////////////////////////////////////////////////////
 CAnimNode::~CAnimNode()
 {
+    AZ_Trace("CAnimNode", "~CAnimNode %i", static_cast<int>(m_nodeType));
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -769,7 +775,7 @@ bool CAnimNode::SetParamValue(float time, CAnimParamType param, float value)
     if (pTrack && pTrack->GetValueType() == AnimValueType::Float)
     {
         // Float track.
-        bool bDefault = !(gEnv->pMovieSystem->IsRecording() && (m_flags & eAnimNodeFlags_EntitySelected)); // Only selected nodes can be recorded
+        bool bDefault = !(m_movieSystem->IsRecording() && (m_flags & eAnimNodeFlags_EntitySelected)); // Only selected nodes can be recorded
         pTrack->SetValue(time, value, bDefault);
         return true;
     }
@@ -777,7 +783,7 @@ bool CAnimNode::SetParamValue(float time, CAnimParamType param, float value)
 }
 
 //////////////////////////////////////////////////////////////////////////
-bool CAnimNode::SetParamValue(float time, CAnimParamType param, const Vec3& value)
+bool CAnimNode::SetParamValue(float time, CAnimParamType param, const AZ::Vector3& value)
 {
     if (m_bIgnoreSetParam)
     {
@@ -788,7 +794,7 @@ bool CAnimNode::SetParamValue(float time, CAnimParamType param, const Vec3& valu
     if (pTrack && pTrack->GetValueType() == AnimValueType::Vector)
     {
         // Vec3 track.
-        bool bDefault = !(gEnv->pMovieSystem->IsRecording() && (m_flags & eAnimNodeFlags_EntitySelected)); // Only selected nodes can be recorded
+        bool bDefault = !(m_movieSystem->IsRecording() && (m_flags & eAnimNodeFlags_EntitySelected)); // Only selected nodes can be recorded
         pTrack->SetValue(time, value, bDefault);
         return true;
     }
@@ -796,7 +802,7 @@ bool CAnimNode::SetParamValue(float time, CAnimParamType param, const Vec3& valu
 }
 
 //////////////////////////////////////////////////////////////////////////
-bool CAnimNode::SetParamValue(float time, CAnimParamType param, const Vec4& value)
+bool CAnimNode::SetParamValue(float time, CAnimParamType param, const AZ::Vector4& value)
 {
     if (m_bIgnoreSetParam)
     {
@@ -807,7 +813,7 @@ bool CAnimNode::SetParamValue(float time, CAnimParamType param, const Vec4& valu
     if (pTrack && pTrack->GetValueType() == AnimValueType::Vector4)
     {
         // Vec4 track.
-        bool bDefault = !(gEnv->pMovieSystem->IsRecording() && (m_flags & eAnimNodeFlags_EntitySelected)); // Only selected nodes can be recorded
+        bool bDefault = !(m_movieSystem->IsRecording() && (m_flags & eAnimNodeFlags_EntitySelected)); // Only selected nodes can be recorded
         pTrack->SetValue(time, value, bDefault);
         return true;
     }
@@ -828,7 +834,7 @@ bool CAnimNode::GetParamValue(float time, CAnimParamType param, float& value)
 }
 
 //////////////////////////////////////////////////////////////////////////
-bool CAnimNode::GetParamValue(float time, CAnimParamType param, Vec3& value)
+bool CAnimNode::GetParamValue(float time, CAnimParamType param, AZ::Vector3& value)
 {
     CCompoundSplineTrack* pTrack = static_cast<CCompoundSplineTrack*>(GetTrackForParameter(param));
     if (pTrack && pTrack->GetValueType() == AnimValueType::Vector && pTrack->GetNumKeys() > 0)
@@ -841,7 +847,7 @@ bool CAnimNode::GetParamValue(float time, CAnimParamType param, Vec3& value)
 }
 
 //////////////////////////////////////////////////////////////////////////
-bool CAnimNode::GetParamValue(float time, CAnimParamType param, Vec4& value)
+bool CAnimNode::GetParamValue(float time, CAnimParamType param, AZ::Vector4& value)
 {
     CCompoundSplineTrack* pTrack = static_cast<CCompoundSplineTrack*>(GetTrackForParameter(param));
     if (pTrack && pTrack->GetValueType() == AnimValueType::Vector4 && pTrack->GetNumKeys() > 0)
@@ -900,6 +906,9 @@ void CAnimNode::Serialize(XmlNodeRef& xmlNode, bool bLoading, bool bLoadEmptyTra
 //////////////////////////////////////////////////////////////////////////
 void CAnimNode::InitPostLoad(IAnimSequence* sequence)
 {
+    [[maybe_unused]] const AZ::EntityId& sequenceEntityId = sequence->GetSequenceEntityId();
+    AZ_Trace("CAnimNode::InitPostLoad", "IAnimSequence is %s", sequenceEntityId.ToString().c_str());
+
     m_pSequence = sequence;
     m_pParentNode = ((CAnimSequence*)m_pSequence)->FindNodeById(m_parentNodeId);
 
@@ -1165,8 +1174,8 @@ void CAnimNode::AnimateSound(std::vector<SSoundInfo>& nodeSoundInfo, SAnimContex
 }
 
 void CAnimNode::SetParent(IAnimNode* parent)
-{ 
-    m_pParentNode = parent; 
+{
+    m_pParentNode = parent;
     if (parent)
     {
         m_parentNodeId = static_cast<CAnimNode*>(m_pParentNode)->GetId();
@@ -1205,7 +1214,7 @@ void CAnimNode::UpdateDynamicParams()
         // which could happen from multiple threads. Lock to avoid a crash iterating over the lua stack
         AZStd::lock_guard<AZStd::mutex> lock(m_updateDynamicParamsLock);
 
-        // run this on the main thread to prevent further threading issues downstream in 
+        // run this on the main thread to prevent further threading issues downstream in
         // AnimNodes that may use EBuses that are not thread safe
         if (gEnv && gEnv->mMainThreadId == CryGetCurrentThreadId())
         {
@@ -1235,3 +1244,8 @@ bool CAnimNode::GetExpanded() const
 {
     return m_expanded;
 }
+
+IMovieSystem* CAnimNode::GetMovieSystem() const
+{
+    return AZ::Interface<IMovieSystem>::Get();
+};
