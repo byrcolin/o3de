@@ -312,8 +312,11 @@ namespace O3DE::ProjectManager
         m_gemLocation = new FormFolderBrowseEditWidget(tr("Gem Location"), "", tr("The path that the gem will be created at."), tr("The chosen directory must either not exist or be empty."));
         gemDetailsLayout->addWidget(m_gemLocation);
         
-        m_gemIconPath = new FormLineEditWidget(tr("Gem Icon Path"), "default.png", tr("Select Gem icon path"), "");
+        m_gemIconPath = new FormLineEditWidget(tr("Gem Icon Path"), "default.png", tr("Relative path to the Gem icon"), "");
         gemDetailsLayout->addWidget(m_gemIconPath);
+
+        m_gemIconUri = new FormLineEditWidget(tr("Gem Icon Uri"), "", tr("Optional URI of the Gem icon"), "");
+        gemDetailsLayout->addWidget(m_gemIconUri);
 
         m_documentationURL = new FormLineEditWidget(
             tr("Documentation URL"), "", tr("Link to any documentation of your Gem i.e. https://o3de.org/docs/user-guide/gems/..."), "");
@@ -476,6 +479,8 @@ namespace O3DE::ProjectManager
             m_gemInfo.m_displayName = m_gemDisplayName->lineEdit()->text();
             m_gemInfo.m_name = m_gemName->lineEdit()->text();
             m_gemInfo.m_summary = m_gemSummary->lineEdit()->text();
+            m_gemInfo.m_iconPath = m_gemIconPath->lineEdit()->text();
+            m_gemInfo.m_iconUri = m_gemIconUri->lineEdit()->text();
             m_gemInfo.m_requirement = m_requirements->lineEdit()->text();
             m_gemInfo.m_platforms = GemInfo::GetPlatformsFromStringList(m_platformOptions->GetOptions());
             m_gemInfo.m_licenseText = m_license->lineEdit()->text();
@@ -583,6 +588,8 @@ namespace O3DE::ProjectManager
         m_gemLocation->setErrorLabelVisible(false);
         
         m_gemIconPath->lineEdit()->clear();
+        m_gemIconUri->lineEdit()->clear();
+
         m_userDefinedGemTags->clear();
 
         //creator details page

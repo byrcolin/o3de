@@ -31,7 +31,7 @@ def get_cache_file_uri(uri: str):
 
     parsed_uri = urllib.parse.urlparse(uri)
     uri_sha256 = hashlib.sha256(parsed_uri.geturl().encode())
-    cache_file = manifest.get_o3de_cache_folder() / str(uri_sha256.hexdigest() + '.json')
+    cache_file = manifest.get_o3de_cache_folder() / str(uri_sha256.hexdigest())
     return cache_file, parsed_uri
 
 def sanitized_repo_uri(repo_uri: str) -> str or None:
@@ -94,7 +94,34 @@ def download_object_manifests(repo_data: dict, download_missing_files_only: bool
                     parsed_uri = git_provider.get_specific_file_uri(parsed_uri)
 
                 download_file_result = utils.download_file(parsed_uri, cache_file, True)
-                if download_file_result != 0:
+                if download_file_result == 0:
+                    # download optional files listed in the object json
+                    file_name = pathlib.Path(cache_file).resolve()
+                    with file_name.open('r') as f:
+                        try:
+                            object_data = json.load(f)
+                        except json.JSONDecodeError as e:
+                            logger.error(f'{file_name} failed to load: {str(e)}')
+                            return
+
+                    optional_files = [
+                        'origin_uri',
+                        'icon_uri',
+                        'license_uri',
+                        'documentation_uri'
+                    ]
+
+                    for optional_file in optional_files:
+                        if (optional_file in object_data):
+                            cache_file, parsed_uri = get_cache_file_uri(object_data[optional_file])
+
+                            if not cache_file.exists() or not download_missing_files_only:
+                                git_provider = utils.get_git_provider(parsed_uri)
+                                if git_provider:
+                                    parsed_uri = git_provider.get_specific_file_uri(parsed_uri)
+
+                                download_file_result = utils.download_file(parsed_uri, cache_file, True)
+                else:
                     return download_file_result
     return 0
 
@@ -297,7 +324,7 @@ def get_object_json_data_from_cached_repo(repo_uri: str, repo_key: str, object_t
             return list()
 
         repo_schema_version = get_repo_schema_version(repo_data)
-        if repo_schema_version == REPO_IMPLICIT_SCHEMA_VERSION:        
+        if repo_schema_version == REPO_IMPLICIT_SCHEMA_VERSION:
 
             # Get list of objects, then add all json paths to the list if they exist in the cache
             repo_objects = []
@@ -332,7 +359,13 @@ def get_object_json_data_from_cached_repo(repo_uri: str, repo_key: str, object_t
     return o3de_object_json_data
 
 def get_gem_json_data_from_cached_repo(repo_uri: str, enabled_only: bool = True) -> list:
-    return get_object_json_data_from_cached_repo(repo_uri, 'gems', 'gem', validation.valid_o3de_gem_json, enabled_only)
+    gems_json_data = get_object_json_data_from_cached_repo(repo_uri, 'gems', 'gem', validation.valid_o3de_gem_json, enabled_only)
+
+    repos_json_data = get_object_json_data_from_cached_repo(repo_uri, 'repos', 'repo', validation.valid_o3de_repo_json, enabled_only)
+    for repo_entry in repos_json_data:
+       gems_json_data.extend(get_gem_json_data_from_cached_repo(repo_entry['repo_uri'], enabled_only))
+
+    return gems_json_data
 
 def get_gem_json_data_from_all_cached_repos(enabled_only: bool = True) -> list:
     gems_json_data = list()
@@ -343,7 +376,13 @@ def get_gem_json_data_from_all_cached_repos(enabled_only: bool = True) -> list:
     return gems_json_data
 
 def get_project_json_data_from_cached_repo(repo_uri: str, enabled_only: bool = True) -> list:
-    return get_object_json_data_from_cached_repo(repo_uri, 'projects', 'project', validation.valid_o3de_project_json, enabled_only)
+    projects_json_data = get_object_json_data_from_cached_repo(repo_uri, 'projects', 'project', validation.valid_o3de_project_json, enabled_only)
+
+    repos_json_data = get_object_json_data_from_cached_repo(repo_uri, 'repos', 'repo', validation.valid_o3de_repo_json, enabled_only)
+    for repo_entry in repos_json_data:
+       projects_json_data.extend(get_project_json_data_from_cached_repo(repo_entry['repo_uri'], enabled_only))
+
+    return projects_json_data
 
 def get_project_json_data_from_all_cached_repos(enabled_only: bool = True) -> list:
     projects_json_data = list()
@@ -354,7 +393,13 @@ def get_project_json_data_from_all_cached_repos(enabled_only: bool = True) -> li
     return projects_json_data
 
 def get_template_json_data_from_cached_repo(repo_uri: str, enabled_only: bool = True) -> list:
-    return get_object_json_data_from_cached_repo(repo_uri, 'templates', 'template', validation.valid_o3de_template_json, enabled_only)
+    templates_json_data = get_object_json_data_from_cached_repo(repo_uri, 'templates', 'template', validation.valid_o3de_template_json, enabled_only)
+
+    repos_json_data = get_object_json_data_from_cached_repo(repo_uri, 'repos', 'repo', validation.valid_o3de_repo_json, enabled_only)
+    for repo_entry in repos_json_data:
+       templates_json_data.extend(get_template_json_data_from_cached_repo(repo_entry['repo_uri'], enabled_only))
+
+    return templates_json_data
 
 def get_template_json_data_from_all_cached_repos(enabled_only: bool = True) -> list:
     templates_json_data = list()
@@ -392,6 +437,14 @@ def refresh_repo(repo_uri: str,
 
 def refresh_repos(download_missing_files_only: bool = False) -> int:
     result = 0
+
+    curated_repo_uri = 'https://canonical.o3de.org/curated.json'
+    curated_cache_file, _ = get_cache_file_uri(curated_repo_uri)
+    if not curated_cache_file.is_file() or not download_missing_files_only:
+        curated_cache_file = download_repo_manifest(curated_repo_uri)
+        if not curated_cache_file:
+            logger.error(f'{curated_repo_uri} could not download.')
+            return 1
 
     # set will stop circular references
     repo_set = set()

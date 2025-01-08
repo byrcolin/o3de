@@ -33,6 +33,9 @@ namespace O3DE::ProjectManager
         bool PythonStarted() override;
         bool StartPython() override;
 
+        // Cache
+        QString GetCacheFile(const QString& filePathOrUri) override;
+
         // Engine
         AZ::Outcome<QVector<EngineInfo>> GetAllEngineInfos() override;
         AZ::Outcome<EngineInfo> GetEngineInfo() override;
@@ -87,7 +90,7 @@ namespace O3DE::ProjectManager
         DetailedOutcome DownloadTemplate(
             const QString& templateName, const QString& path, std::function<void(int, int)> templateProgressCallback, bool force = false) override;
         void CancelDownload() override;
-        bool IsGemUpdateAvaliable(const QString& gemName, const QString& lastUpdated) override;
+        bool IsGemUpdateAvailable(const QString& gemName, const QString& lastUpdated) override;
 
         // Templates
         AZ::Outcome<QVector<ProjectTemplateInfo>> GetProjectTemplates() override;

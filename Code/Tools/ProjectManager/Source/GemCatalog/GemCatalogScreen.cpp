@@ -522,10 +522,10 @@ namespace O3DE::ProjectManager
         auto outcome = AZ::SemanticVersion::ParseFromString(version.toUtf8().constData());
         const QString gemName = outcome ? QString("%1==%2").arg(gemInfo.m_name, version) : gemInfo.m_name;
 
-        // Check if there is an update avaliable now that repo is refreshed
-        bool updateAvaliable = PythonBindingsInterface::Get()->IsGemUpdateAvaliable(gemName, gemInfo.m_lastUpdatedDate);
+        // Check if there is an update available now that repo is refreshed
+        bool updateAvailable = PythonBindingsInterface::Get()->IsGemUpdateAvailable(gemName, gemInfo.m_lastUpdatedDate);
 
-        GemUpdateDialog* confirmUpdateDialog = new GemUpdateDialog(gemInfo.m_name, updateAvaliable, this);
+        GemUpdateDialog* confirmUpdateDialog = new GemUpdateDialog(gemInfo.m_name, updateAvailable, this);
         if (confirmUpdateDialog->exec() == QDialog::Accepted)
         {
             DownloadGem(modelIndex, version, path);

@@ -16,7 +16,7 @@
 
 namespace O3DE::ProjectManager
 {
-    GemUpdateDialog::GemUpdateDialog(const QString& gemName, bool updateAvaliable, QWidget* parent)
+    GemUpdateDialog::GemUpdateDialog(const QString& gemName, bool updateAvailable, QWidget* parent)
         : QDialog(parent)
     {
         setWindowTitle(tr("Update Remote Gem"));
@@ -31,7 +31,7 @@ namespace O3DE::ProjectManager
 
         // Body
         QLabel* subTitleLabel = new QLabel(tr("%1 to the latest version of %2?").arg(
-                                           updateAvaliable ? tr("Update") : tr("Force update"), gemName));
+                                           updateAvailable ? tr("Update") : tr("Force update"), gemName));
         subTitleLabel->setObjectName("dialogSubTitle");
         layout->addWidget(subTitleLabel);
 
@@ -40,7 +40,7 @@ namespace O3DE::ProjectManager
         QLabel* bodyLabel = new QLabel(tr("%1The latest version of this Gem may not be compatible with your engine. "
                                           "Updating this Gem will remove any local changes made to this Gem, "
                                           "and may remove old features that are in use.").arg(
-                                              updateAvaliable ? "" : tr("No update detected for Gem. "
+                                              updateAvailable ? "" : tr("No update detected for Gem. "
                                               "This will force a re-download of the gem. ")));
         bodyLabel->setWordWrap(true);
         bodyLabel->setFixedSize(QSize(440, 80));
@@ -56,7 +56,7 @@ namespace O3DE::ProjectManager
         QPushButton* cancelButton = dialogButtons->addButton(tr("Cancel"), QDialogButtonBox::RejectRole);
         cancelButton->setProperty("secondary", true);
         QPushButton* updateButton =
-            dialogButtons->addButton(tr("%1Update Gem").arg(updateAvaliable ? "" : tr("Force ")), QDialogButtonBox::ApplyRole);
+            dialogButtons->addButton(tr("%1Update Gem").arg(updateAvailable ? "" : tr("Force ")), QDialogButtonBox::ApplyRole);
         updateButton->setProperty("primary", true);
 
         connect(cancelButton, &QPushButton::clicked, this, &QDialog::reject);

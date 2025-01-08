@@ -11,9 +11,8 @@
 #include <GemCatalog/GemSortFilterProxyModel.h>
 #include <AdjustableHeaderWidget.h>
 #include <ProjectManagerDefs.h>
-
+#include <PythonBindingsInterface.h>
 #include <AzCore/std/smart_ptr/unique_ptr.h>
-
 #include <QEvent>
 #include <QAbstractItemView>
 #include <QPainter>
@@ -123,16 +122,57 @@ namespace O3DE::ProjectManager
             painter->restore();
         }
 
-        // Gem preview
-        QString previewPath = QDir(gemInfo.m_path).filePath(ProjectPreviewImagePath);
-        QPixmap gemPreviewImage(previewPath);
-        QRect gemPreviewRect(
-            contentRect.left() + AdjustableHeaderWidget::s_headerTextIndent,
-            contentRect.center().y() - GemPreviewImageHeight / 2,
-            GemPreviewImageWidth, GemPreviewImageHeight);
-        painter->drawPixmap(gemPreviewRect, gemPreviewImage);
+        // Gem icon
+        if (gemInfo.m_gemOrigin == GemInfo::GemOrigin::Remote)
+        {
+            int pixWidth = gemInfo.m_iconUriPixMap.width();
+            int pixHeight = gemInfo.m_iconUriPixMap.height();
+            const float aspectRatio = static_cast<float>(pixWidth) / pixHeight;
+            int xScaler = GemPreviewImageWidth;
+            int yScaler = GemPreviewImageHeight;
 
-        // Gem (dispay) name
+            if (aspectRatio > 1.0f)
+            {
+                yScaler = static_cast<int>(1.0f / aspectRatio * xScaler);
+            }
+            else if (aspectRatio < 1.0f)
+            {
+                xScaler = static_cast<int>(aspectRatio * yScaler);
+            }
+
+            QRect gemPreviewRect(
+                contentRect.left() + AdjustableHeaderWidget::s_headerTextIndent,
+                contentRect.center().y() - yScaler / 2,
+                xScaler, yScaler);
+
+            painter->drawPixmap(gemPreviewRect, gemInfo.m_iconUriPixMap);
+        }
+        else
+        {
+            int pixWidth = gemInfo.m_iconPixMap.width();
+            int pixHeight = gemInfo.m_iconPixMap.height();
+            const float aspectRatio = static_cast<float>(pixWidth) / pixHeight;
+            int xScaler = GemPreviewImageWidth;
+            int yScaler = GemPreviewImageHeight;
+
+            if (aspectRatio > 1.0f)
+            {
+                yScaler = static_cast<int>(1.0f / aspectRatio * xScaler);
+            }
+            else if (aspectRatio < 1.0f)
+            {
+                xScaler = static_cast<int>(aspectRatio * yScaler);
+            }
+
+            QRect gemPreviewRect(
+                contentRect.left() + AdjustableHeaderWidget::s_headerTextIndent,
+                contentRect.center().y() - yScaler / 2,
+                xScaler, yScaler);
+
+            painter->drawPixmap(gemPreviewRect, gemInfo.m_iconPixMap);
+        }
+
+        // Gem (display) name
         QFont gemNameFont(options.font);
         QPair<int, int> nameXBounds = CalcColumnXBounds(HeaderOrder::Name);
         const int nameStartX = nameXBounds.first;

@@ -482,6 +482,25 @@ namespace O3DE::ProjectManager
         return engineInfo;
     }
 
+    QString PythonBindings::GetCacheFile(const QString& filePathOrUri)
+    {
+        QString cacheFile;
+        AZ::Outcome<void, AZStd::string> result = ExecuteWithLockErrorHandling(
+            [&]
+            {
+                using namespace pybind11::literals;
+                auto result = m_repo.attr("get_cache_file_uri")("uri"_a = QString_To_Py_String(filePathOrUri));
+
+                // if a valid registered object is not found None is returned
+                if (!pybind11::isinstance<pybind11::none>(result))
+                {
+                    pybind11::tuple ret = result.cast<pybind11::tuple>();
+                    cacheFile = Py_To_String(ret[0]);
+                }
+            });
+        return cacheFile;
+    }
+
     AZ::Outcome<QVector<EngineInfo>> PythonBindings::GetAllEngineInfos()
     {
         QVector<EngineInfo> engines;
@@ -666,6 +685,8 @@ namespace O3DE::ProjectManager
         gemInfo.m_sourceControlRef = Py_To_String_Optional(data, "source_control_ref", "");
         gemInfo.m_documentationLink = Py_To_String_Optional(data, "documentation_url", "");
         gemInfo.m_iconPath = Py_To_String_Optional(data, "icon_path", "preview.png");
+        gemInfo.m_iconUri = Py_To_String_Optional(data, "icon_uri", "");
+        gemInfo.m_iconUri = Py_To_String_Optional(data, "icon_uri", gemInfo.m_iconUri);
         gemInfo.m_licenseText = Py_To_String_Optional(data, "license", "Unspecified License");
         gemInfo.m_licenseLink = Py_To_String_Optional(data, "license_url", "");
         gemInfo.m_repoUri = Py_To_String_Optional(data, "repo_uri", "");
@@ -755,6 +776,42 @@ namespace O3DE::ProjectManager
                 gemInfo.m_incompatibleGemDependencies.push_back(Py_To_String(incompatible_dependency));
             }
         }
+
+        if (!gemInfo.m_iconUri.isEmpty())
+        {
+            gemInfo.m_iconUriPreviewPath = PythonBindingsInterface::Get()->GetCacheFile(gemInfo.m_iconUri);
+            gemInfo.m_iconUriPixMap = QPixmap(gemInfo.m_iconUriPreviewPath);
+        }
+        else
+        {
+            gemInfo.m_iconUriPixMap = QPixmap(":/gem.svg");
+        }
+
+        bool foundLocalIcon = false;
+        if (!gemInfo.m_iconPath.isEmpty())
+        {
+            gemInfo.m_iconPreviewPath = QDir(gemInfo.m_path).filePath(gemInfo.m_iconPath);
+            if (QFile::exists(gemInfo.m_iconPreviewPath))
+            {
+                foundLocalIcon = true;
+            }
+        }
+
+        if (!foundLocalIcon && QFile::exists(QDir(gemInfo.m_path).filePath(ProjectPreviewImagePath)))
+        {
+            gemInfo.m_iconPreviewPath = QDir(gemInfo.m_path).filePath(ProjectPreviewImagePath);
+            if (QFile::exists(gemInfo.m_iconPreviewPath))
+            {
+                foundLocalIcon = true;
+            }
+        }
+
+        if (!foundLocalIcon)
+        {
+            gemInfo.m_iconPreviewPath = ":/gem.svg";
+        }
+
+        gemInfo.m_iconPixMap = QPixmap(gemInfo.m_iconPreviewPath);
     }
 
     AZ::Outcome<GemInfo> PythonBindings::GetGemInfo(const QString& path, const QString& projectPath)
@@ -986,6 +1043,7 @@ namespace O3DE::ProjectManager
                     "user_tags"_a = QString_To_Py_String(gemInfo.m_features.join(",")),
                     "platforms"_a = QStringList_To_Py_List(gemInfo.GetPlatformsAsStringList()),
                     "icon_path"_a = QString_To_Py_Path(gemInfo.m_iconPath),
+                    "icon_uri"_a = QString_To_Py_Path(gemInfo.m_iconUri),
                     "documentation_url"_a = QString_To_Py_String(gemInfo.m_documentationLink),
                     "repo_uri"_a = QString_To_Py_String(gemInfo.m_repoUri),
                     "no_register"_a = !registerGem)
@@ -1025,6 +1083,7 @@ namespace O3DE::ProjectManager
                     "new_origin"_a = QString_To_Py_String(newGemInfo.m_origin),
                     "new_summary"_a = QString_To_Py_String(newGemInfo.m_summary),
                     "new_icon"_a = QString_To_Py_String(newGemInfo.m_iconPath),
+                    "new_icon_uri"_a = QString_To_Py_String(newGemInfo.m_iconUri),
                     "new_requirements"_a = QString_To_Py_String(newGemInfo.m_requirement),
                     "new_documentation_url"_a = QString_To_Py_String(newGemInfo.m_documentationLink),
                     "new_license"_a = QString_To_Py_String(newGemInfo.m_licenseText),
@@ -2039,20 +2098,20 @@ namespace O3DE::ProjectManager
         m_requestCancelDownload = true;
     }
 
-    bool PythonBindings::IsGemUpdateAvaliable(const QString& gemName, const QString& lastUpdated)
+    bool PythonBindings::IsGemUpdateAvailable(const QString& gemName, const QString& lastUpdated)
     {
-        bool updateAvaliableResult = false;
+        bool updateAvailableResult = false;
         bool result = ExecuteWithLock(
             [&]
             {
                 auto pyGemName = QString_To_Py_String(gemName);
                 auto pyLastUpdated = QString_To_Py_String(lastUpdated);
-                auto pythonUpdateAvaliableResult = m_download.attr("is_o3de_gem_update_available")(pyGemName, pyLastUpdated);
+                auto pythonUpdateAvailableResult = m_download.attr("is_o3de_gem_update_available")(pyGemName, pyLastUpdated);
 
-                updateAvaliableResult = pythonUpdateAvaliableResult.cast<bool>();
+                updateAvailableResult = pythonUpdateAvailableResult.cast<bool>();
             });
 
-        return result && updateAvaliableResult;
+        return result && updateAvailableResult;
     }
 
     IPythonBindings::ErrorPair PythonBindings::GetErrorPair()

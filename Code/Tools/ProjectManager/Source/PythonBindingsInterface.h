@@ -56,6 +56,13 @@ namespace O3DE::ProjectManager
          */
         virtual bool StartPython() = 0;
 
+        /**
+         * Get the cache file for the given file path/uri
+         * @param filePathOrUri the path or URI to the file
+         * @return The string that would be the cache file path if it exists given the input uri.
+         */
+        virtual QString GetCacheFile(const QString& filePathOrUri) = 0;
+
         // Engine
 
 
@@ -399,12 +406,12 @@ namespace O3DE::ProjectManager
         virtual void CancelDownload() = 0;
 
         /**
-         * Checks if there is an update avaliable for a gem on a repo.
+         * Checks if there is an update available for a gem on a repo.
          * @param gemName the name of the gem to check.
          * @param lastUpdated last time the gem was update.
-         * @return true if update is avaliable, false if not.
+         * @return true if update is available, false if not.
          */
-        virtual bool IsGemUpdateAvaliable(const QString& gemName, const QString& lastUpdated) = 0;
+        virtual bool IsGemUpdateAvailable(const QString& gemName, const QString& lastUpdated) = 0;
 
         /**
          * Add an error string to be returned when the current python call is complete.

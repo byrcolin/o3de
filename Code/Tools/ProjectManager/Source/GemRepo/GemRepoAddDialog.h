@@ -12,6 +12,9 @@
 #include <QDialog>
 #endif
 
+QT_FORWARD_DECLARE_CLASS(QListView)
+QT_FORWARD_DECLARE_CLASS(QStandardItemModel)
+
 namespace O3DE::ProjectManager
 {
     QT_FORWARD_DECLARE_CLASS(FormLineEditWidget)
@@ -27,5 +30,9 @@ namespace O3DE::ProjectManager
 
     private:
         FormLineEditWidget* m_repoPath = nullptr;
+        QListView* m_curatedRepos = nullptr;
+        QStandardItemModel* m_curatedReposModel = nullptr;
+        QListView* m_uncuratedRepos = nullptr;
+        QStandardItemModel* m_uncuratedReposModel = nullptr;
     };
 } // namespace O3DE::ProjectManager

@@ -13,6 +13,7 @@
 #include <QStringList>
 #include <QVector>
 #include <QMetaType>
+#include <QPixmap>
 #endif
 
 namespace O3DE::ProjectManager
@@ -84,7 +85,35 @@ namespace O3DE::ProjectManager
         QString m_origin = "Unknown Creator";
         GemOrigin m_gemOrigin = Local;
         QString m_originURL;
-        QString m_iconPath;
+
+        ////////////////////////////////////////////////////////
+        // icon
+        // When displayed in the project manager the gem icon can be inside or outside the gem
+        // The optional icon uri is the icon you will see, if set, when the gem is remote or has no icon path
+        //   *If set this icon file is automatically downloaded and cached if it exists
+        // The icon path is the icon you will see if set when the gem is local
+        // Normally these are exactly the same icon, but do not have to be
+        // If neither is set the default gem.svg will be used
+
+        // Icon path is the optional relative path to the icon file in the gem from the gem root
+        // If appended to the gem root this would get you the local icon file
+        // This is the icon you will see in the program manager if the object is local
+        // i.e
+        // c:/Gems/Input <--this gems local root
+        QString m_iconPath; // i.e. "resources/icon.jpg"
+        QString m_iconPreviewPath; // This is the full local path
+        QPixmap m_iconPixMap;
+        // would instruct the program manager to use "c:/Gems/Input/reources/icon.jpg" as the
+        // icon in program manager when this gem is local
+
+        // Icon uri is the optional full internet address of the icon to be cached and seen in the
+        // program manager when the gem is remote or if no icon path is set
+        //   *If set this icon file is automatically downloaded and cached if it exists
+        QString m_iconUri; // i.e. "https://overlo3de.com/apmg/input/resources/icon.jpg"
+        QString m_iconUriPreviewPath; //This is the local cache of the iconUri
+        QPixmap m_iconUriPixMap;
+
+
         bool m_isAdded = false; //! Is the gem explicitly added (not a dependency) and enabled in the project?
         bool m_isEngineGem = false;
         bool m_isProjectGem = false;

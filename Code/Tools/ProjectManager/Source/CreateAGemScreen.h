@@ -85,6 +85,7 @@ namespace O3DE::ProjectManager
         FormLineEditTagsWidget* m_userDefinedGemTags = nullptr;
         FormFolderBrowseEditWidget* m_gemLocation = nullptr;
         FormLineEditWidget* m_gemIconPath = nullptr;
+        FormLineEditWidget* m_gemIconUri = nullptr;
         FormLineEditWidget* m_documentationURL = nullptr;
 
         //Gem Creator
