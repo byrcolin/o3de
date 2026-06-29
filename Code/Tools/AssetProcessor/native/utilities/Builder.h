@@ -61,6 +61,11 @@ namespace AssetProcessor
         }
         virtual ~Builder() = default;
 
+        //! Set the default priority for newly launched builder processes.
+        //! Called by ConcurrencyController to switch between Normal and BelowNormal.
+        static void SetDefaultLaunchPriority(AzFramework::ProcessPriority priority);
+        static AzFramework::ProcessPriority GetDefaultLaunchPriority();
+
         // Disable copy and move (can't move a semaphore)
         AZ_DISABLE_COPY_MOVE(Builder);
 

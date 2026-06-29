@@ -14,6 +14,12 @@
 #include <QThreadPool>
 #include <QTimer>
 
+namespace
+{
+    // Timer ID for the concurrency controller tick (1-second interval)
+    constexpr int ConcurrencyTickIntervalMs = 1000;
+}
+
 namespace AssetProcessor
 {
     RCController::RCController(QObject* parent)
@@ -24,6 +30,24 @@ namespace AssetProcessor
         AssetProcessorPlatformBus::Handler::BusConnect();
 
         UpdateAndComputeJobSlots();
+
+        // Initialize the dynamic concurrency controller
+        m_concurrencyController.Initialize();
+        if (m_concurrencyController.IsEnabled())
+        {
+            // Start a 1-second timer to tick the controller
+            QTimer* concurrencyTimer = new QTimer(this);
+            QObject::connect(concurrencyTimer, &QTimer::timeout, this, [this]()
+            {
+                m_concurrencyController.Tick();
+                // Re-dispatch jobs in case more slots opened up
+                if (!m_shuttingDown && !m_dispatchingPaused)
+                {
+                    DispatchJobs();
+                }
+            });
+            concurrencyTimer->start(ConcurrencyTickIntervalMs);
+        }
 
         m_RCQueueSortModel.AttachToModel(&m_RCJobListModel);
 
@@ -168,6 +192,13 @@ namespace AssetProcessor
     void RCController::FinishJob(RCJob* rcJob)
     {
         m_RCQueueSortModel.RemoveJobIdEntry(rcJob);
+
+        // Feed throughput data to the concurrency controller
+        if (m_concurrencyController.IsEnabled() && rcJob->GetState() == RCJob::completed)
+        {
+            m_concurrencyController.OnJobCompleted();
+        }
+
         QString platform = rcJob->GetPlatformInfo().m_identifier.c_str();
         auto found = m_jobsCountPerPlatform.find(platform);
         if (found != m_jobsCountPerPlatform.end())
@@ -431,8 +462,24 @@ namespace AssetProcessor
 
             // do we have an open slot for this job?
             const unsigned int numJobsInFlight = m_RCJobListModel.jobsInFlight();
-            const unsigned int regularJobLimit = m_alwaysUseMaxJobs ? m_maxJobs : AZStd::GetMax(m_maxJobs / 2, 1u);
-            const unsigned int maxJobsToStart = criticalOrEscalated ? m_maxJobs : regularJobLimit;
+            unsigned int maxJobsToStart;
+
+            if (m_concurrencyController.IsEnabled())
+            {
+                // Dynamic controller manages concurrency
+                maxJobsToStart = m_concurrencyController.GetMaxConcurrentJobs();
+                // Allow a small burst for critical/escalated work
+                if (criticalOrEscalated)
+                {
+                    maxJobsToStart = AZStd::GetMax(maxJobsToStart, maxJobsToStart + 2u);
+                }
+            }
+            else
+            {
+                // Legacy static behavior
+                const unsigned int regularJobLimit = m_alwaysUseMaxJobs ? m_maxJobs : AZStd::GetMax(m_maxJobs / 2, 1u);
+                maxJobsToStart = criticalOrEscalated ? m_maxJobs : regularJobLimit;
+            }
 
             // note that "auto fail jobs" oimmediately return as failed without doing any processing
             // so they get to skip the line (they don't use up a thread

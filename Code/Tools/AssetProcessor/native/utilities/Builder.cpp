@@ -244,6 +244,18 @@ namespace AssetProcessor
         return params;
     }
 
+    static AzFramework::ProcessPriority s_defaultLaunchPriority = AzFramework::ProcessPriority::PROCESSPRIORITY_NORMAL;
+
+    void Builder::SetDefaultLaunchPriority(AzFramework::ProcessPriority priority)
+    {
+        s_defaultLaunchPriority = priority;
+    }
+
+    AzFramework::ProcessPriority Builder::GetDefaultLaunchPriority()
+    {
+        return s_defaultLaunchPriority;
+    }
+
     AZStd::unique_ptr<AzFramework::ProcessWatcher> Builder::LaunchProcess(
         const char* fullExePath, const AZStd::vector<AZStd::string>& params) const
     {
@@ -254,7 +266,7 @@ namespace AssetProcessor
         commandLineArray.insert(commandLineArray.end(), params.begin(), params.end());
         processLaunchInfo.m_commandlineParameters = AZStd::move(commandLineArray);
         processLaunchInfo.m_showWindow = false;
-        processLaunchInfo.m_processPriority = AzFramework::ProcessPriority::PROCESSPRIORITY_IDLE;
+        processLaunchInfo.m_processPriority = s_defaultLaunchPriority;
 
         AZ_TracePrintf(
             AssetProcessor::DebugChannel,

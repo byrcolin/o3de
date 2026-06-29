@@ -95,6 +95,8 @@ set(FILES
     native/utilities/BuilderManager.inl
     native/utilities/ByteArrayStream.cpp
     native/utilities/ByteArrayStream.h
+    native/utilities/ConcurrencyController.cpp
+    native/utilities/ConcurrencyController.h
     native/utilities/IniConfiguration.cpp
     native/utilities/IniConfiguration.h
     native/utilities/JobDiagnosticTracker.cpp
@@ -106,11 +108,17 @@ set(FILES
     native/utilities/PlatformConfiguration.cpp
     native/utilities/PlatformConfiguration.h
     native/utilities/PotentialDependencies.h
+    native/utilities/ProcessPriorityManager.cpp
+    native/utilities/ProcessPriorityManager.h
+    native/utilities/ResourceMonitor.cpp
+    native/utilities/ResourceMonitor.h
     native/utilities/StatsCapture.cpp
     native/utilities/StatsCapture.h
     native/utilities/SpecializedDependencyScanner.h
     native/utilities/ThreadHelper.cpp
     native/utilities/ThreadHelper.h
+    native/utilities/ThroughputTracker.cpp
+    native/utilities/ThroughputTracker.h
     native/utilities/IPathConversion.h
     native/utilities/UuidManager.h
     native/utilities/UuidManager.cpp

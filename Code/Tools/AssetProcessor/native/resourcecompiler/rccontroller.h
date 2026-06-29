@@ -14,6 +14,7 @@
 #include <QList>
 
 #include "native/utilities/AssetUtilEBusHelper.h"
+#include "native/utilities/ConcurrencyController.h"
 
 #include "rcjoblistmodel.h"
 #include "RCQueueSortModel.h"
@@ -114,8 +115,10 @@ namespace AssetProcessor
     private:
         void FinishJob(AssetProcessor::RCJob* rcJob);
 
-        unsigned int m_maxJobs = 0; //<! 0 means autocompute, read from registry key
+        unsigned int m_maxJobs = 0; //<! 0 means autocompute, read from registry key (used as fallback when dynamic controller is disabled)
         bool m_alwaysUseMaxJobs = false; //<! normally, it only uses maxJobs cpu cores when critical or escalated work is present to save CPU usage
+
+        ConcurrencyController m_concurrencyController;
 
         bool m_dispatchingJobs = false;
         bool m_shuttingDown = false;
