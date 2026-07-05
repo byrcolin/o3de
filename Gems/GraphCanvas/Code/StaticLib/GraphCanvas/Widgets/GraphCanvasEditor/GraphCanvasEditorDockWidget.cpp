@@ -20,10 +20,10 @@ namespace GraphCanvas
     // EditorDockWidget
     /////////////////////
 
-    static int counter = 0;
+    static int s_dockWidgetCounter = 0;
     
     EditorDockWidget::EditorDockWidget(const EditorId& editorId, const QString& title, QWidget* parent)
-        : AzQtComponents::StyledDockWidget(!title.isEmpty() ? title : QString("Window %1").arg(counter), parent)
+        : AzQtComponents::StyledDockWidget(!title.isEmpty() ? title : QString("Window %1").arg(s_dockWidgetCounter), parent)
         , m_editorId(editorId)
         , m_ui(new Ui::GraphCanvasEditorDockWidget())        
     {
@@ -47,7 +47,7 @@ namespace GraphCanvas
         m_dockWidgetId = AZ::Entity::MakeId();
         EditorDockWidgetRequestBus::Handler::BusConnect(m_dockWidgetId);
 
-        ++counter;
+        ++s_dockWidgetCounter;
     }
 
     EditorDockWidget::~EditorDockWidget()

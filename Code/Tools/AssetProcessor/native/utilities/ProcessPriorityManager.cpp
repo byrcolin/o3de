@@ -13,6 +13,8 @@
 #if defined(AZ_PLATFORM_WINDOWS)
 #include <AzCore/PlatformIncl.h>
 #include <TlHelp32.h>
+#include <Psapi.h>
+#pragma comment(lib, "Psapi.lib")
 #endif
 
 namespace AssetProcessor
@@ -67,6 +69,12 @@ namespace AssetProcessor
 
         m_currentPriorityClass = priorityClass;
 #endif
+    }
+
+    size_t ProcessPriorityManager::GetTrackedCount() const
+    {
+        AZStd::lock_guard<AZStd::mutex> lock(m_mutex);
+        return m_trackedPids.size();
     }
 
     bool ProcessPriorityManager::DetectExternalLoad() const
@@ -138,5 +146,61 @@ namespace AssetProcessor
         CloseHandle(snap);
 #endif
         return pids;
+    }
+
+    AZ::u64 ProcessPriorityManager::GetTotalBuilderMemoryMB() const
+    {
+#if defined(AZ_PLATFORM_WINDOWS)
+        AZStd::lock_guard<AZStd::mutex> lock(m_mutex);
+        AZ::u64 totalBytes = 0;
+        for (AZ::u32 pid : m_trackedPids)
+        {
+            HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, pid);
+            if (hProcess)
+            {
+                PROCESS_MEMORY_COUNTERS pmc;
+                if (GetProcessMemoryInfo(hProcess, &pmc, sizeof(pmc)))
+                {
+                    totalBytes += pmc.WorkingSetSize;
+                }
+                CloseHandle(hProcess);
+            }
+        }
+        return totalBytes / (1024 * 1024);
+#else
+        return 0;
+#endif
+    }
+
+    unsigned int ProcessPriorityManager::GetTotalBuilderThreads() const
+    {
+#if defined(AZ_PLATFORM_WINDOWS)
+        AZStd::lock_guard<AZStd::mutex> lock(m_mutex);
+        unsigned int totalThreads = 0;
+
+        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        if (snap == INVALID_HANDLE_VALUE)
+        {
+            return 0;
+        }
+
+        THREADENTRY32 te;
+        te.dwSize = sizeof(THREADENTRY32);
+        if (Thread32First(snap, &te))
+        {
+            do
+            {
+                if (m_trackedPids.count(te.th32OwnerProcessID))
+                {
+                    ++totalThreads;
+                }
+            } while (Thread32Next(snap, &te));
+        }
+
+        CloseHandle(snap);
+        return totalThreads;
+#else
+        return 0;
+#endif
     }
 } // namespace AssetProcessor

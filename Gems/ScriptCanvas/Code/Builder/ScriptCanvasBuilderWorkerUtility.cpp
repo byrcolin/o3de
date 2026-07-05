@@ -16,6 +16,9 @@
 #include <AzCore/Serialization/SerializeContext.h>
 #include <AzFramework/Script/ScriptComponent.h>
 #include <AzFramework/StringFunc/StringFunc.h>
+#include <AzCore/std/chrono/chrono.h>
+#include <AzCore/Script/lua/lua.h>
+#include <AzCore/Serialization/Utils.h>
 #include <Builder/ScriptCanvasBuilderWorker.h>
 #include <ScriptCanvas/Asset/SubgraphInterfaceAsset.h>
 #include <ScriptCanvas/Asset/SubgraphInterfaceAssetHandler.h>
@@ -111,7 +114,10 @@ namespace ScriptCanvasBuilder
         compileRequest.m_input = &inputStream;
 
         AzFramework::ConstructScriptAssetPaths(compileRequest);
-        auto compileOutcome = AzFramework::CompileScript(compileRequest);
+        // Reuse cached ScriptContext to avoid creating a new Lua VM
+        static thread_local AZ::ScriptContext* s_createLuaCtx = new AZ::ScriptContext(AZ::DefaultScriptContextId);
+        lua_settop(s_createLuaCtx->NativeContext(), 0);
+        auto compileOutcome = AzFramework::CompileScript(compileRequest, *s_createLuaCtx);
         if (!compileOutcome.IsSuccess())
         {
             return AZ::Failure(AZStd::string(compileOutcome.TakeError()));
@@ -201,8 +207,10 @@ namespace ScriptCanvasBuilder
     AZ::Outcome<void, AZStd::string> ProcessTranslationJob(ProcessTranslationJobInput& input)
     {
         using namespace ScriptCanvas;
+        const auto jobStartTime = AZStd::chrono::high_resolution_clock::now();
 
         auto sourceGraph = PrepareSourceGraph(input.buildEntity);
+        const auto prepareEndTime = AZStd::chrono::high_resolution_clock::now();
 
         auto version = sourceGraph->GetVersion();
         if (version.grammarVersion == ScriptCanvas::GrammarVersion::Initial
@@ -221,6 +229,7 @@ namespace ScriptCanvasBuilder
         request.printModelToConsole = ScriptCanvas::Grammar::g_printAbstractCodeModel;
 
         ScriptCanvas::Translation::Result translationResult = TranslateToLua(request);
+        const auto translateEndTime = AZStd::chrono::high_resolution_clock::now();
         auto outcome = translationResult.IsSuccess(ScriptCanvas::Translation::TargetFlags::Lua);
         if (!outcome.IsSuccess())
         {
@@ -242,12 +251,56 @@ namespace ScriptCanvasBuilder
         compileRequest.m_input = &inputStream;
         AzFramework::ConstructScriptAssetPaths(compileRequest);
 
-        // compiles in input stream Lua in memory, writes output to disk
-        auto compileOutcome = AzFramework::CompileScriptAndSaveAsset(compileRequest);
+        // Compile Lua script, reusing cached ScriptContext to avoid creating a new Lua VM per job.
+        // Creating a ScriptContext is ~900ms (lua_newstate + library/table setup) and dominates per-job time.
+        auto compileOutcome = [&]() -> AZ::Outcome<AZStd::string, AZStd::string> {
+            static thread_local AZ::ScriptContext* s_compileCtx = new AZ::ScriptContext(AZ::DefaultScriptContextId);
+            lua_settop(s_compileCtx->NativeContext(), 0); // Reset stack for reuse
+
+            AZ::IO::FileIOStream outputStream;
+            if (!outputStream.Open(compileRequest.m_destPath.c_str(), AZ::IO::OpenMode::ModeWrite | AZ::IO::OpenMode::ModeBinary))
+            {
+                return AZ::Failure(AZStd::string::format("Failed to open output file %s", compileRequest.m_destPath.data()));
+            }
+
+            auto result = AzFramework::CompileScript(compileRequest, *s_compileCtx);
+            if (!result.IsSuccess())
+            {
+                return AZ::Failure(result.TakeError());
+            }
+
+            AZ::SerializeContext* serializeContext = nullptr;
+            AZ::ComponentApplicationBus::BroadcastResult(serializeContext, &AZ::ComponentApplicationRequests::GetSerializeContext);
+            if (!serializeContext || !AZ::Utils::SaveObjectToStream<AZ::LuaScriptData>(
+                outputStream, AZ::ObjectStream::ST_BINARY, &compileRequest.m_luaScriptDataOut, serializeContext))
+            {
+                return AZ::Failure(AZStd::string("Failed to serialize compiled script"));
+            }
+
+            return AZ::Success(compileRequest.m_destFileName);
+        }();
+        const auto compileEndTime = AZStd::chrono::high_resolution_clock::now();
         if (!compileOutcome.IsSuccess())
         {
             return AZ::Failure(compileOutcome.GetError());
         };
+
+        // Log timing breakdown
+        {
+            const auto prepareMs = AZStd::chrono::duration_cast<AZStd::chrono::milliseconds>(prepareEndTime - jobStartTime).count();
+            const auto translateMs = AZStd::chrono::duration_cast<AZStd::chrono::milliseconds>(translateEndTime - prepareEndTime).count();
+            const auto compileMs = AZStd::chrono::duration_cast<AZStd::chrono::milliseconds>(compileEndTime - translateEndTime).count();
+            const auto totalMs = AZStd::chrono::duration_cast<AZStd::chrono::milliseconds>(compileEndTime - jobStartTime).count();
+            const auto parseMs = translationResult.m_parseDuration / 1000; // m_parseDuration is in microseconds
+            AZ_TracePrintf("ScriptCanvasBuilder", "SC TIMING '%s': prepare=%lldms translate=%lldms (parse=%lldms) compile=%lldms total=%lldms luaSize=%zu\n",
+                input.fileNameOnly.c_str(),
+                static_cast<long long>(prepareMs),
+                static_cast<long long>(translateMs),
+                static_cast<long long>(parseMs),
+                static_cast<long long>(compileMs),
+                static_cast<long long>(totalMs),
+                translation.m_text.size());
+        }
 
         // Interpreted Lua
         AssetBuilderSDK::JobProduct jobProduct;

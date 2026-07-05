@@ -72,6 +72,7 @@ namespace AssetProcessor
         void markAsCompleted(RCJob* rcJob);
         void markAsCataloged(const AssetProcessor::QueueElementID& check);
         unsigned int jobsInFlight() const;
+        unsigned int jobsInFlightByKey(const QString& jobKey) const;
         // Returns how many jobs in the queue have the missing dependency flag set.
         unsigned int jobsInQueueWithoutMissingDependencies() const;
         // Returns how many finished jobs that haven't been updated in the catalog.

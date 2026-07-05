@@ -8,6 +8,7 @@
 
 
 #include <RHI.Builders/ShaderPlatformInterface.h>
+#include <RHI.Builders/DxcCompilerLibrary.h>
 
 #include <Atom/RHI.Edit/Utils.h>
 #include <Atom/RHI.Reflect/DX12/PipelineLayoutDescriptor.h>
@@ -17,6 +18,7 @@
 #include <AzCore/IO/FileIO.h>
 #include <AzCore/IO/SystemFile.h>
 #include <AzCore/Serialization/Json/JsonUtils.h>
+#include <AzCore/std/chrono/chrono.h>
 #include <AzFramework/StringFunc/StringFunc.h>
 
 namespace AZ
@@ -289,45 +291,201 @@ namespace AZ
             args.m_digest = &sha1;
 
             const auto dxcInputFile = RHI::PrependFile(args);  // Prepend PAL header & obtain hash
-            // -Fd "Write debug information to the given file, or automatically named file in directory when ending in '\\'"
-            // If we use the auto-name (hash), there is no way we can retrieve that name apart from listing the directory.
-            // Instead, let's just generate that hash ourselves.
-            AZStd::string symbolDatabaseFileCliArgument{" "};  // when not debug: still insert a space between 5.dxil and 7.hlsl-in
-            if (graphicsDevMode || shaderBuildArguments.m_generateDebugInfo)
+
+            const bool needDebugInfo = graphicsDevMode || shaderBuildArguments.m_generateDebugInfo;
+
+            // Compute PDB file path for debug builds (needed by both library and process paths)
+            AZStd::string symbolDatabaseFilePath;
+            if (needDebugInfo)
             {
-                // prepare .pdb filename:
                 AZStd::string sha1hex = RHI::ByteToHexString(sha1);
-                AZStd::string symbolDatabaseFilePath = dxcInputFile.c_str();  // mutate from source
-                AZStd::string pdbFileName = sha1hex + "-" + profileIt->second; // concatenate the shader profile to disambiguate vs/ps...
+                symbolDatabaseFilePath = dxcInputFile.c_str();
+                AZStd::string pdbFileName = sha1hex + "-" + profileIt->second;
                 AzFramework::StringFunc::Path::ReplaceFullName(symbolDatabaseFilePath, pdbFileName.c_str(), "pdb");
-                // it is possible that another activated platform/profile, already exported that file. (since it's hashed on the source file)
-                // dxc returns an error in such case. we get less surprising effets by just not mentionning an -Fd argument
                 if (AZ::IO::SystemFile::Exists(symbolDatabaseFilePath.c_str()))
                 {
-                    AZ_Warning(DX12ShaderPlatformName, false, "debug symbol file %s already exists -> -Fd argument dropped", symbolDatabaseFilePath.c_str());
+                    AZ_Warning(DX12ShaderPlatformName, false, "debug symbol file %s already exists -> skipping PDB write", symbolDatabaseFilePath.c_str());
+                    symbolDatabaseFilePath.clear();
+                }
+            }
+
+            // Entry point argument (empty for ray tracing library shaders)
+            const bool isRayTracing = (shaderStageType == RHI::ShaderHardwareStage::RayTracing);
+
+            const auto compileStartTime = AZStd::chrono::high_resolution_clock::now();
+
+            // =====================================================================
+            // Try in-process DXC library compilation first (eliminates process spawn overhead)
+            // =====================================================================
+            auto& dxcLib = DxcCompilerLibrary::Instance();
+            if (dxcLib.IsAvailable())
+            {
+                // Load the prepended source file into memory
+                auto sourceLoadResult = AZ::RHI::LoadFileBytes(dxcInputFile.c_str());
+                if (!sourceLoadResult)
+                {
+                    AZ_Error(DX12ShaderPlatformName, false, "Failed to load shader source: %s",
+                        sourceLoadResult.GetError().c_str());
+                    return false;
+                }
+                const auto& sourceBytes = sourceLoadResult.GetValue();
+
+                // Build the DXC argument list (same flags as the command line, minus file-output args)
+                AZStd::vector<AZStd::string> libArgs;
+                if (!isRayTracing)
+                {
+                    libArgs.push_back("-E");
+                    libArgs.push_back(entryPoint);
+                }
+                libArgs.push_back("-T");
+                libArgs.push_back(profileIt->second);
+                // Add all user/build arguments (e.g. -Od, -Zi, -Zss, defines, etc.)
+                for (const auto& arg : dxcArguments)
+                {
+                    libArgs.push_back(arg);
+                }
+
+                auto compileResult = dxcLib.Compile(
+                    sourceBytes.data(), sourceBytes.size(), libArgs, needDebugInfo);
+
+                if (!compileResult.m_succeeded)
+                {
+                    // Report errors in the same format as ExecuteShaderCompiler
+                    AZ_Error(DX12ShaderPlatformName, false, "DXC compilation failed for '%s':\n%s",
+                        shaderSourceFile.c_str(), compileResult.m_errors.c_str());
+                    return false;
+                }
+
+                // Log warnings if any
+                if (!compileResult.m_errors.empty())
+                {
+                    AZ_Warning(DX12ShaderPlatformName, false, "DXC warnings for '%s':\n%s",
+                        shaderSourceFile.c_str(), compileResult.m_errors.c_str());
+                }
+
+                // Handle specialization constants (still requires dxsc.exe with file-based I/O)
+                if (useSpecializationConstants)
+                {
+                    // Write the compiled bytecode to disk so dxsc.exe can read it
+                    {
+                        AZ::IO::SystemFile outFile;
+                        if (!outFile.Open(shaderOutputFile.c_str(),
+                            AZ::IO::SystemFile::SF_OPEN_CREATE | AZ::IO::SystemFile::SF_OPEN_WRITE_ONLY))
+                        {
+                            AZ_Error(DX12ShaderPlatformName, false,
+                                "Failed to write shader output for dxsc: %s", shaderOutputFile.c_str());
+                            return false;
+                        }
+                        outFile.Write(compileResult.m_objectCode.data(), compileResult.m_objectCode.size());
+                        outFile.Close();
+                    }
+
+                    // Run dxsc.exe for specialization constant patching
+                    const auto dxscRelativePath = RHI::GetDirectXShaderCompilerPath("Builders/DirectXShaderCompiler/dxsc.exe");
+
+                    AZStd::string shaderOutputCommon;
+                    AzFramework::StringFunc::Path::GetFileName(shaderSourceFile.c_str(), shaderOutputCommon);
+                    AzFramework::StringFunc::Path::Join(tempFolder.c_str(), shaderOutputCommon.c_str(), shaderOutputCommon);
+
+                    AZStd::string patchedShaderOutput = shaderOutputCommon;
+                    AzFramework::StringFunc::Path::ReplaceExtension(patchedShaderOutput, "dxil.patched.bin");
+                    AZStd::string offsetsOutput = shaderOutputCommon;
+                    AzFramework::StringFunc::Path::ReplaceExtension(offsetsOutput, "offsets.json");
+
+                    const auto dxscCommandOptions = AZStd::string::format(
+                        "-sv=%lu -o=\"%s\" -f=\"%s\" \"%s\"",
+                        static_cast<unsigned long>(SCSentinelValue),
+                        patchedShaderOutput.c_str(),
+                        offsetsOutput.c_str(),
+                        shaderOutputFile.c_str());
+
+                    if (!RHI::ExecuteShaderCompiler(dxscRelativePath, dxscCommandOptions, shaderSourceFile, tempFolder, "DXSC"))
+                    {
+                        return false;
+                    }
+
+                    // Read the patched output
+                    auto patchedLoadResult = AZ::RHI::LoadFileBytes(patchedShaderOutput.c_str());
+                    if (!patchedLoadResult)
+                    {
+                        AZ_Error(DX12ShaderPlatformName, false, "%s", patchedLoadResult.GetError().c_str());
+                        return false;
+                    }
+                    compiledShader = patchedLoadResult.TakeValue();
+                    specializationOffsetsFile = offsetsOutput;
                 }
                 else
                 {
-                    symbolDatabaseFileCliArgument = " -Fd \"" + symbolDatabaseFilePath + "\" ";  // 6.pdb  hereunder
-                    byProducts.m_intermediatePaths.emplace(AZStd::move(symbolDatabaseFilePath));
+                    // No specialization — use the in-memory bytecode directly (no file I/O needed)
+                    compiledShader = AZStd::move(compileResult.m_objectCode);
                 }
-            }
-            const auto params = RHI::ShaderBuildArguments::ListAsString(dxcArguments);
-            const auto dxcEntryPoint = (shaderStageType == RHI::ShaderHardwareStage::RayTracing) ? "" : AZStd::string::format("-E %s", entryPoint.c_str());
-            //                                                1.entry   3.config            5.dxil  7.hlsl-in
-            //                                                    |   2.SM  |   4.output       | 6.pdb  |
-            //                                                    |     |   |       |          |   |    |
-            const auto dxcCommandOptions = AZStd::string::format("%s -T %s %s -Fo \"%s\" -Fh \"%s\"%s\"%s\"",
-                                                                 dxcEntryPoint.c_str(),                  // 1
-                                                                 profileIt->second.c_str(),              // 2
-                                                                 params.c_str(),                         // 3
-                                                                 shaderOutputFile.c_str(),               // 4
-                                                                 objectCodeOutputFile.c_str(),           // 5
-                                                                 symbolDatabaseFileCliArgument.c_str(),  // 6
-                                                                 dxcInputFile.c_str()                    // 7
-                                                                 );
 
-            // Run Shader Compiler
+                // Count dynamic branches from the DXIL disassembly
+                if (!compileResult.m_disassemblyText.empty())
+                {
+                    byProducts.m_dynamicBranchCount = aznumeric_cast<uint32_t>(
+                        AZ::RHI::RegexCount(compileResult.m_disassemblyText, "^ *(br|indirectbr|switch) "));
+                }
+                else
+                {
+                    byProducts.m_dynamicBranchCount = ByProducts::UnknownDynamicBranchCount;
+                }
+
+                // Write PDB to disk if debug info was generated
+                if (needDebugInfo && !compileResult.m_pdbData.empty() && !symbolDatabaseFilePath.empty())
+                {
+                    AZ::IO::SystemFile pdbFile;
+                    if (pdbFile.Open(symbolDatabaseFilePath.c_str(),
+                        AZ::IO::SystemFile::SF_OPEN_CREATE | AZ::IO::SystemFile::SF_OPEN_WRITE_ONLY))
+                    {
+                        pdbFile.Write(compileResult.m_pdbData.data(), compileResult.m_pdbData.size());
+                        pdbFile.Close();
+                        byProducts.m_intermediatePaths.emplace(AZStd::move(symbolDatabaseFilePath));
+                    }
+                }
+
+                // Write disassembly text to file for debug byproducts (matches original -Fh behavior)
+                if (needDebugInfo && !compileResult.m_disassemblyText.empty())
+                {
+                    AZ::IO::SystemFile disasmFile;
+                    if (disasmFile.Open(objectCodeOutputFile.c_str(),
+                        AZ::IO::SystemFile::SF_OPEN_CREATE | AZ::IO::SystemFile::SF_OPEN_WRITE_ONLY))
+                    {
+                        disasmFile.Write(compileResult.m_disassemblyText.data(), compileResult.m_disassemblyText.size());
+                        disasmFile.Close();
+                        byProducts.m_intermediatePaths.emplace(AZStd::move(objectCodeOutputFile));
+                    }
+                }
+
+                const auto compileEndTime = AZStd::chrono::high_resolution_clock::now();
+                const auto compileMs = AZStd::chrono::duration_cast<AZStd::chrono::milliseconds>(compileEndTime - compileStartTime).count();
+                AZ_TracePrintf(DX12ShaderPlatformName, "DXC LIBRARY compile '%s' [%s] took %lld ms\n",
+                    shaderSourceFile.c_str(), profileIt->second.c_str(), static_cast<long long>(compileMs));
+
+                return true;
+            }
+
+            // =====================================================================
+            // Fallback: process-based compilation via dxc.exe (original code path)
+            // =====================================================================
+            AZStd::string symbolDatabaseFileCliArgument{" "};
+            if (needDebugInfo && !symbolDatabaseFilePath.empty())
+            {
+                symbolDatabaseFileCliArgument = " -Fd \"" + symbolDatabaseFilePath + "\" ";
+                byProducts.m_intermediatePaths.emplace(symbolDatabaseFilePath);
+            }
+
+            const auto params = RHI::ShaderBuildArguments::ListAsString(dxcArguments);
+            const auto dxcEntryPoint = isRayTracing ? "" : AZStd::string::format("-E %s", entryPoint.c_str());
+            const auto dxcCommandOptions = AZStd::string::format("%s -T %s %s -Fo \"%s\" -Fh \"%s\"%s\"%s\"",
+                                                                 dxcEntryPoint.c_str(),
+                                                                 profileIt->second.c_str(),
+                                                                 params.c_str(),
+                                                                 shaderOutputFile.c_str(),
+                                                                 objectCodeOutputFile.c_str(),
+                                                                 symbolDatabaseFileCliArgument.c_str(),
+                                                                 dxcInputFile.c_str());
+
             if (!RHI::ExecuteShaderCompiler(dxcRelativePath, dxcCommandOptions, shaderSourceFile, tempFolder, "DXC"))
             {
                 return false;
@@ -335,7 +493,6 @@ namespace AZ
 
             if (useSpecializationConstants)
             {
-                // Need to patch the shader so it can be used with specialization constants.
                 const auto dxscRelativePath = RHI::GetDirectXShaderCompilerPath("Builders/DirectXShaderCompiler/dxsc.exe");
 
                 AZStd::string shaderOutputCommon;
@@ -348,22 +505,17 @@ namespace AZ
                 AzFramework::StringFunc::Path::ReplaceExtension(offsetsOutput, "offsets.json");
 
                 const auto dxscCommandOptions = AZStd::string::format(
-                    //   1.sentinel    3.offsets_output   
-                    //     |    2.output    |   4.dxil-in
-                    //     |       |        |      |
                     "-sv=%lu -o=\"%s\" -f=\"%s\" \"%s\"",
-                    static_cast<unsigned long>(SCSentinelValue), // 1
-                    patchedShaderOutput.c_str(), // 2
-                    offsetsOutput.c_str(), // 3
-                    shaderOutputFile.c_str() // 4
-                );
+                    static_cast<unsigned long>(SCSentinelValue),
+                    patchedShaderOutput.c_str(),
+                    offsetsOutput.c_str(),
+                    shaderOutputFile.c_str());
 
                 if (!RHI::ExecuteShaderCompiler(dxscRelativePath, dxscCommandOptions, shaderSourceFile, tempFolder, "DXSC"))
                 {
                     return false;
                 }
                 shaderOutputFile = patchedShaderOutput;
-
                 specializationOffsetsFile = offsetsOutput;
             }
 
@@ -373,23 +525,11 @@ namespace AZ
                 AZ_Error(DX12ShaderPlatformName, false, "%s", shaderOutputFileLoadResult.GetError().c_str());
                 return false;
             }
-
             compiledShader = shaderOutputFileLoadResult.TakeValue();
 
-            // Count the dynamic branches by searching dxc.exe's generated header file.
-            // There might be a more ideal way to count the number of dynamic branches, perhaps using DXC libs, but doing it this way is quick and easy to set up.
             auto objectCodeLoadResult = AZ::RHI::LoadFileString(objectCodeOutputFile.c_str());
             if (objectCodeLoadResult)
-            {                
-                // The regex here is based on dxc source code, which lists terminating instructions as:
-                //    case Ret:    return "ret";
-                //    case Br:     return "br";
-                //    case Switch: return "switch";
-                //    case IndirectBr: return "indirectbr";
-                //    case Invoke: return "invoke";
-                //    case Resume: return "resume";
-                //    case Unreachable: return "unreachable";
-                // If you have to update this regex, also update UtilsTests RegexCount_DXIL
+            {
                 byProducts.m_dynamicBranchCount = aznumeric_cast<uint32_t>(AZ::RHI::RegexCount(objectCodeLoadResult.GetValue(), "^ *(br|indirectbr|switch) "));
             }
             else
@@ -397,10 +537,15 @@ namespace AZ
                 byProducts.m_dynamicBranchCount = ByProducts::UnknownDynamicBranchCount;
             }
 
-            if (graphicsDevMode || shaderBuildArguments.m_generateDebugInfo)
+            if (needDebugInfo)
             {
                 byProducts.m_intermediatePaths.emplace(AZStd::move(objectCodeOutputFile));
             }
+
+            const auto compileEndTime = AZStd::chrono::high_resolution_clock::now();
+            const auto compileMs = AZStd::chrono::duration_cast<AZStd::chrono::milliseconds>(compileEndTime - compileStartTime).count();
+            AZ_TracePrintf(DX12ShaderPlatformName, "DXC PROCESS compile '%s' [%s] took %lld ms\n",
+                shaderSourceFile.c_str(), profileIt->second.c_str(), static_cast<long long>(compileMs));
 
             return true;
         }

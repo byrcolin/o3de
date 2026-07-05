@@ -24,6 +24,9 @@
 #include <QStringListModel>
 #include <ui/BuilderListModel.h>
 
+class QLabel;
+class QTimer;
+
 namespace AzToolsFramework
 {
     namespace AssetDatabase
@@ -137,6 +140,7 @@ protected Q_SLOTS:
     void ApplyConfig();
 protected:
     bool eventFilter(QObject* obj, QEvent* event) override;
+    void changeEvent(QEvent* event) override;
 private:
 
     class LogSortFilterProxy : public QSortFilterProxyModel
@@ -264,5 +268,10 @@ private:
     AssetProcessor::SourceAndScanID m_cachedSourceAssetSelection;
     AZStd::string m_cachedProductAssetSelection;
     QMetaObject::Connection m_connectionForResettingAssetsView;
+
+    // --- Concurrency metrics status bar ---
+    QLabel* m_metricsLabel = nullptr;
+    QTimer* m_metricsTimer = nullptr;
+    void UpdateMetricsDisplay();
 };
 

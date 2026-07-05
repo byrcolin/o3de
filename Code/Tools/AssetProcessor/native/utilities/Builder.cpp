@@ -211,6 +211,12 @@ namespace AssetProcessor
         params.emplace_back(AZStd::string::format(R"(-engine-path="%s")", enginePath.c_str()));
         params.emplace_back(AZStd::string::format("-port=%d", portNumber));
 
+        // Limit builder job threads to reduce system-wide context switching overhead.
+        // Each builder only processes one job at a time, so a full thread pool is wasteful.
+        // Default 0.6 ratio on a 64-core machine = 37 threads per builder; we cap at 4.
+        params.emplace_back("-cl_jobThreadsMinNumber=4");
+        params.emplace_back("-cl_jobThreadsConcurrencyRatio=0.0");
+
         if (purpose == BuilderPurpose::Registration)
         {
             params.emplace_back("--register");

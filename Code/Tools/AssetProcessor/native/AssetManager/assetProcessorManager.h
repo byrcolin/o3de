@@ -43,6 +43,7 @@
 #include <AssetManager/ExcludedFolderCache.h>
 #include <AssetManager/ProductAsset.h>
 #include <native/utilities/IMetadataUpdates.h>
+#include <native/utilities/CreateJobsDispatcher.h>
 
 class FileWatcher;
 
@@ -377,7 +378,26 @@ namespace AssetProcessor
         void CheckDeletedSourceFile(
             const SourceAssetReference& sourceAsset,
             AZStd::chrono::steady_clock::time_point initialProcessTime);
-        void CheckModifiedSourceFile(const SourceAssetReference& sourceAsset, const ScanFolderInfo* scanFolderInfo);
+
+        //! Holds work items for a single source file's CreateJobs batch.
+        struct CreateJobsBatchEntry
+        {
+            SourceAssetReference m_sourceAsset;
+            const ScanFolderInfo* m_scanFolder = nullptr;
+            AZ::Uuid m_sourceUUID;
+
+            struct BuilderWorkItem
+            {
+                AssetBuilderSDK::AssetBuilderDesc m_builderDesc;
+                int m_dispatchIndex = -1; // Index into CreateJobsDispatcher results
+                AZ::s64 m_runKey = 0;
+            };
+
+            AZStd::vector<BuilderWorkItem> m_builderItems;
+        };
+
+        void CheckModifiedSourceFile(const SourceAssetReference& sourceAsset, const ScanFolderInfo* scanFolderInfo,
+            AZStd::vector<CreateJobsBatchEntry>* createJobsBatches = nullptr);
         bool AnalyzeJob(JobDetails& details);
         void CheckDeletedCacheFolder(QString normalizedPath);
         void CheckDeletedSourceFolder(const SourceAssetReference& sourceAsset);
@@ -413,6 +433,18 @@ namespace AssetProcessor
         void CleanEmptyFolder(QString folder, QString root);
 
         void ProcessBuilders(const SourceAssetReference& sourceAsset, const ScanFolderInfo* scanFolder, const AssetProcessor::BuilderInfoList& builderInfoList);
+
+        //! Prepare all CreateJobs work for a file without executing the blocking call.
+        //! Returns the batch entry with work submitted to the dispatcher.
+        void PrepareCreateJobsBatch(
+            const SourceAssetReference& sourceAsset,
+            const ScanFolderInfo* scanFolder,
+            const AssetProcessor::BuilderInfoList& builderInfoList,
+            AZStd::vector<CreateJobsBatchEntry>& outBatches);
+
+        //! Process a completed CreateJobs batch (responses from worker threads).
+        void ProcessCreateJobsBatchResults(CreateJobsBatchEntry& batch);
+
         AZStd::vector<AZStd::string> GetExcludedFolders();
 
         struct SourceInfoWithFingerprints
@@ -588,6 +620,11 @@ namespace AssetProcessor
         AZStd::unordered_set<AZStd::string> m_processingProductInfoList;
         AZ::s64 m_highestJobRunKeySoFar = 0;
         AZStd::vector<JobToProcessEntry> m_jobEntries;
+
+        //! Thread pool for parallel CreateJobs dispatch.
+        AZStd::unique_ptr<CreateJobsDispatcher> m_createJobsDispatcher;
+        bool m_insideCreateJobsBatch = false; //!< Guard against re-entrance during processEvents
+
         AZStd::unordered_set<JobDetails> m_jobsToProcess;
         //! This map is required to prevent multiple sourceFile modified events been send by the APM
         AZStd::unordered_map<AZ::Uuid, qint64> m_sourceFileModTimeMap;

@@ -14,15 +14,7 @@ namespace AssetProcessor
     {
         if (purpose == BuilderPurpose::CreateJobs)
         {
-            if (m_createJobsBuilder && m_createJobsBuilder->IsValid())
-            {
-                AZ_Error(
-                    "BuilderList", false, "AddBuilder called with CreateJobs builder (%s) but a CreateJobs builder (%s) already exists and is valid",
-                    builder->UuidString().c_str(), m_createJobsBuilder->UuidString().c_str());
-                return;
-            }
-
-            m_createJobsBuilder = AZStd::move(builder);
+            m_createJobsBuilders.push_back(AZStd::move(builder));
         }
         else
         {
@@ -32,9 +24,12 @@ namespace AssetProcessor
 
     AZStd::shared_ptr<Builder> BuilderList::Find(AZ::Uuid uuid)
     {
-        if (m_createJobsBuilder && m_createJobsBuilder->GetUuid() == uuid)
+        for (auto& builder : m_createJobsBuilders)
         {
-            return m_createJobsBuilder;
+            if (builder && builder->GetUuid() == uuid)
+            {
+                return builder;
+            }
         }
 
         auto itr = m_builders.find(uuid);
@@ -46,26 +41,23 @@ namespace AssetProcessor
     {
         if (purpose == BuilderPurpose::CreateJobs)
         {
-            if (m_createJobsBuilder)
+            for (auto it = m_createJobsBuilders.begin(); it != m_createJobsBuilders.end(); )
             {
-                if (m_createJobsBuilder->IsReadyToWork())
+                auto& builder = *it;
+                if (builder && builder->IsReadyToWork())
                 {
-                    m_createJobsBuilder->PumpCommunicator();
+                    builder->PumpCommunicator();
 
-                    if (m_createJobsBuilder->IsValid())
+                    if (builder->IsValid())
                     {
-                        return BuilderRef(m_createJobsBuilder);
+                        return BuilderRef(builder);
                     }
 
-                    m_createJobsBuilder = nullptr;
+                    it = m_createJobsBuilders.erase(it);
                 }
                 else
                 {
-                    AZ_Warning(
-                        "BuilderList",
-                        false,
-                        "CreateJobs builder requested but existing builder is already busy.  There should not be multiple parallel "
-                        "requests for CreateJobs builders");
+                    ++it;
                 }
             }
 
@@ -105,28 +97,28 @@ namespace AssetProcessor
         // If the builder is currently in use, this will signal to the waiting thread to not expect a reply
         // and fail the current job request.
 
-        if (m_createJobsBuilder && m_createJobsBuilder->GetConnectionId() == connId)
+        for (auto it = m_createJobsBuilders.begin(); it != m_createJobsBuilders.end(); ++it)
         {
-            uuidString = m_createJobsBuilder->UuidString();
-            m_createJobsBuilder->m_connectionId = 0;
-            m_createJobsBuilder = nullptr;
-
-            return uuidString;
-        }
-        else
-        {
-            for (auto itr = m_builders.begin(); itr != m_builders.end(); ++itr)
+            if (*it && (*it)->GetConnectionId() == connId)
             {
-                auto& builder = itr->second;
+                uuidString = (*it)->UuidString();
+                (*it)->m_connectionId = 0;
+                m_createJobsBuilders.erase(it);
+                return uuidString;
+            }
+        }
 
-                if (builder->GetConnectionId() == connId)
-                {
-                    uuidString = builder->UuidString();
-                    builder->m_connectionId = 0;
-                    m_builders.erase(itr);
+        for (auto itr = m_builders.begin(); itr != m_builders.end(); ++itr)
+        {
+            auto& builder = itr->second;
 
-                    return uuidString;
-                }
+            if (builder->GetConnectionId() == connId)
+            {
+                uuidString = builder->UuidString();
+                builder->m_connectionId = 0;
+                m_builders.erase(itr);
+
+                return uuidString;
             }
         }
 
@@ -135,23 +127,28 @@ namespace AssetProcessor
 
     void BuilderList::RemoveByUuid(AZ::Uuid uuid)
     {
-        if (m_createJobsBuilder && m_createJobsBuilder->GetUuid() == uuid)
+        for (auto it = m_createJobsBuilders.begin(); it != m_createJobsBuilders.end(); ++it)
         {
-            m_createJobsBuilder = nullptr;
+            if (*it && (*it)->GetUuid() == uuid)
+            {
+                m_createJobsBuilders.erase(it);
+                return;
+            }
         }
-        else
-        {
-            m_builders.erase(uuid);
-        }
+
+        m_builders.erase(uuid);
     }
 
     void BuilderList::PumpIdleBuilders()
     {
-        // idle builders will not have their event pump run inside the job that they are performing, so we need to pump them here.
-        // these are all the builders that are "ready to work" ie aren't currently working.
-        if (m_createJobsBuilder && m_createJobsBuilder->IsReadyToWork())
+        // Idle builders will not have their event pump run inside the job that they are performing, so we need to pump them here.
+        // These are all the builders that are "ready to work", i.e. are not currently working.
+        for (auto& builder : m_createJobsBuilders)
         {
-            m_createJobsBuilder->PumpCommunicator();
+            if (builder && builder->IsReadyToWork())
+            {
+                builder->PumpCommunicator();
+            }
         }
 
         for (auto pair : m_builders)

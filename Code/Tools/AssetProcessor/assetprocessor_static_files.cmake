@@ -97,6 +97,8 @@ set(FILES
     native/utilities/ByteArrayStream.h
     native/utilities/ConcurrencyController.cpp
     native/utilities/ConcurrencyController.h
+    native/utilities/CreateJobsDispatcher.cpp
+    native/utilities/CreateJobsDispatcher.h
     native/utilities/IniConfiguration.cpp
     native/utilities/IniConfiguration.h
     native/utilities/JobDiagnosticTracker.cpp

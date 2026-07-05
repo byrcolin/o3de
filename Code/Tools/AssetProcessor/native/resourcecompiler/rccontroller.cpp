@@ -39,7 +39,7 @@ namespace AssetProcessor
             QTimer* concurrencyTimer = new QTimer(this);
             QObject::connect(concurrencyTimer, &QTimer::timeout, this, [this]()
             {
-                m_concurrencyController.Tick();
+                m_concurrencyController.Tick(aznumeric_cast<unsigned int>(m_RCJobListModel.jobsInFlight()));
                 // Re-dispatch jobs in case more slots opened up
                 if (!m_shuttingDown && !m_dispatchingPaused)
                 {
@@ -447,13 +447,28 @@ namespace AssetProcessor
         }
         m_dispatchingJobs = true;
 
+        // Track which job keys have hit their per-key cap this dispatch cycle.
+        // Passed to GetNextPendingJob so it skips jobs of saturated types.
+        QSet<QString> saturatedKeys;
+        bool perKeyEnforced = true;
+
         do
         {
-            RCJob* rcJob = m_RCQueueSortModel.GetNextPendingJob();
+            RCJob* rcJob = m_RCQueueSortModel.GetNextPendingJob(
+                (perKeyEnforced && !saturatedKeys.isEmpty()) ? &saturatedKeys : nullptr);
 
             if (!rcJob)
             {
-                // there aren't any jobs remaining to dispatch.
+                if (perKeyEnforced && !saturatedKeys.isEmpty())
+                {
+                    // No other job types available to fill slots.
+                    // Relax per-key limits so saturated types can use remaining capacity.
+                    // Better to run more shaders (with some contention) than leave cores idle.
+                    perKeyEnforced = false;
+                    saturatedKeys.clear();
+                    continue;
+                }
+                // Truly no jobs remaining to dispatch.
                 break;
             }
 
@@ -492,6 +507,32 @@ namespace AssetProcessor
                 {
                     // already using too much slots.
                     break;
+                }
+
+                // Per-key concurrency limit — applies regardless of priority/escalation.
+                // This is a resource constraint (prevent TLB/cache thrashing), not a priority issue.
+                // Only enforced when other job types are available to fill remaining slots.
+                if (perKeyEnforced)
+                {
+                    AZStd::string jobKey(rcJob->GetJobKey().toUtf8().constData());
+                    unsigned int perKeyLimit = m_concurrencyController.GetPerKeyLimit(jobKey);
+                    if (perKeyLimit > 0)
+                    {
+                        unsigned int keyInFlight = m_RCJobListModel.jobsInFlightByKey(rcJob->GetJobKey());
+                        if (keyInFlight >= perKeyLimit)
+                        {
+                            // This type is saturated — add to exclude set and continue
+                            // looking for jobs of other types.
+                            saturatedKeys.insert(rcJob->GetJobKey());
+                            continue;
+                        }
+                    }
+                }
+
+                // Rate-limit new builder launches to prevent connection storms
+                if (!m_concurrencyController.CanLaunchBuilder())
+                {
+                    break; // hit launch rate limit, will resume on next dispatch cycle (1s timer)
                 }
             }
             StartJob(rcJob);

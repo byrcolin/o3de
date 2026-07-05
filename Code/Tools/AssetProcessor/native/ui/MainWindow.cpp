@@ -23,6 +23,7 @@
 #include <native/ui/SourceAssetTreeFilterModel.h>
 
 #include <AzFramework/Asset/AssetSystemBus.h>
+#include <native/resourcecompiler/rccontroller.h>
 #include <AzCore/JSON/stringbuffer.h>
 #include <AzCore/JSON/prettywriter.h>
 #include <AzCore/JSON/pointer.h>
@@ -47,14 +48,16 @@
 #include "../utilities/ApplicationServer.h"
 #include "../connection/connectionManager.h"
 #include "../connection/connection.h"
-#include "../resourcecompiler/rccontroller.h"
 #include "../resourcecompiler/RCJobSortFilterProxyModel.h"
 
 
 #include <QClipboard>
 #include <QDesktopServices>
+#include <QLabel>
 #include <QListWidget>
 #include <QMessageBox>
+#include <QStatusBar>
+#include <QTimer>
 #include <QUrl>
 #include <QWidgetAction>
 #include <QKeyEvent>
@@ -216,6 +219,20 @@ bool MainWindow::eventFilter(QObject* /*obj*/, QEvent* event)
         }
     }
     return false;
+}
+
+void MainWindow::changeEvent(QEvent* event)
+{
+    QMainWindow::changeEvent(event);
+
+    if (event->type() == QEvent::WindowStateChange || event->type() == QEvent::ActivationChange)
+    {
+        bool isForeground = isActiveWindow() && !isMinimized();
+        if (auto* rc = m_guiApplicationManager->GetRCController())
+        {
+            rc->GetConcurrencyController().SetForeground(isForeground);
+        }
+    }
 }
 
 void MainWindow::Activate()
@@ -669,6 +686,16 @@ void MainWindow::Activate()
 
     ui->MetaCreationDelayValue->setText(tr("%1 milliseconds").arg(m_guiApplicationManager->GetAssetProcessorManager()->GetMetaCreationDelay()));
 
+    // --- Concurrency metrics status bar ---
+    m_metricsLabel = new QLabel(this);
+    m_metricsLabel->setTextFormat(Qt::RichText);
+    m_metricsLabel->setStyleSheet("QLabel { font-family: 'Consolas', 'Courier New', monospace; font-size: 11px; padding: 2px 6px; }");
+    statusBar()->addPermanentWidget(m_metricsLabel, 1);
+
+    m_metricsTimer = new QTimer(this);
+    connect(m_metricsTimer, &QTimer::timeout, this, &MainWindow::UpdateMetricsDisplay);
+    m_metricsTimer->start(1000);
+    UpdateMetricsDisplay(); // Show initial state immediately
 }
 
 void MainWindow::BuilderTabSelectionChanged(const QItemSelection& selected, const QItemSelection& /*deselected*/)
@@ -1330,6 +1357,89 @@ MainWindow::~MainWindow()
 {
     m_guiApplicationManager = nullptr;
     delete ui;
+}
+
+void MainWindow::UpdateMetricsDisplay()
+{
+    auto* rc = m_guiApplicationManager ? m_guiApplicationManager->GetRCController() : nullptr;
+    if (!rc)
+    {
+        m_metricsLabel->setText("Metrics: waiting for controller...");
+        return;
+    }
+
+    auto m = rc->GetConcurrencyController().GetMetrics();
+
+    // Color-code the state
+    const char* stateColor = "#888888";
+    const char* stateIcon = "";
+    switch (m.m_state)
+    {
+    case AssetProcessor::ConcurrencyController::Metrics::State::RampingUp:
+        stateColor = "#4CAF50"; stateIcon = "\xe2\x96\xb2"; break; // ▲
+    case AssetProcessor::ConcurrencyController::Metrics::State::Steady:
+        stateColor = "#2196F3"; stateIcon = "\xe2\x97\x86"; break; // ◆
+    case AssetProcessor::ConcurrencyController::Metrics::State::ScalingDown:
+        stateColor = "#FF9800"; stateIcon = "\xe2\x96\xbc"; break; // ▼
+    case AssetProcessor::ConcurrencyController::Metrics::State::ExternalLoad:
+        stateColor = "#F44336"; stateIcon = "\xe2\x9a\xa0"; break; // ⚠
+    }
+
+    // Color-code CPU (green < 50, yellow < 85, red >= 85)
+    const char* cpuColor = m.m_cpuPercent >= 85.0f ? "#F44336" : (m.m_cpuPercent >= 50.0f ? "#FF9800" : "#4CAF50");
+
+    // Color-code RAM (green < 70%, yellow < 90%, red >= 90%)
+    const char* ramColor = m.m_memoryUsedPercent >= 90.0f ? "#F44336" : (m.m_memoryUsedPercent >= 70.0f ? "#FF9800" : "#4CAF50");
+
+    // Thread contention: show as percentage of baseline (100% = baseline, 300% = 3x baseline = saturated)
+    float contentionPct = (m.m_csBaselinePerSec > 0.0f) ? (m.m_contextSwitchesPerSec / m.m_csBaselinePerSec * 100.0f) : 0.0f;
+    const char* contentionColor = (contentionPct >= 300.0f) ? "#F44336" : (contentionPct >= 200.0f ? "#FF9800" : "#4CAF50");
+
+    // Format raw CS with K suffix for tooltip-style detail
+    QString csRawText;
+    if (m.m_contextSwitchesPerSec >= 1000.0f)
+    {
+        csRawText = QString("%1K/s").arg(m.m_contextSwitchesPerSec / 1000.0f, 0, 'f', 1);
+    }
+    else
+    {
+        csRawText = QString("%1/s").arg(static_cast<int>(m.m_contextSwitchesPerSec));
+    }
+
+    // Builder counts: pool (alive processes), target (max concurrent dispatch slots)
+    QString text = QString(
+        "<span style='color:%1'>%2 %3</span>"
+        " &nbsp;|&nbsp; Pool: <b>%4</b> / Target: <b>%5</b>"
+        " &nbsp;|&nbsp; Jobs: <b>%6</b>"
+        " &nbsp;|&nbsp; CPU: <span style='color:%7'><b>%8%</b></span>"
+        " &nbsp;|&nbsp; RAM: <span style='color:%9'><b>%10%</b></span> <span style='color:#888'>(%11 GB free)</span>"
+        " &nbsp;|&nbsp; Contention: <span style='color:%12'><b>%13%</b></span> <span style='color:#888'>(%14)</span>"
+        " &nbsp;|&nbsp; Throughput: <b>%15</b> jobs/s"
+        " &nbsp;|&nbsp; Priority: <b>%16</b>"
+        " &nbsp;|&nbsp; Builders: <b>%17</b> GB / <b>%18</b> threads"
+        "%19"
+    )
+    .arg(stateColor)
+    .arg(stateIcon)
+    .arg(m.m_stateName)
+    .arg(m.m_activeBuilders)
+    .arg(m.m_targetConcurrent)
+    .arg(m.m_jobsInFlight)
+    .arg(cpuColor)
+    .arg(m.m_cpuPercent, 0, 'f', 0)
+    .arg(ramColor)
+    .arg(m.m_memoryUsedPercent, 0, 'f', 0)
+    .arg(m.m_availableMemoryMB / 1024.0, 0, 'f', 1)
+    .arg(contentionColor)
+    .arg(contentionPct, 0, 'f', 0)
+    .arg(csRawText)
+    .arg(m.m_throughputJobsPerSec, 0, 'f', 1)
+    .arg(m.m_priorityName)
+    .arg(m.m_totalBuilderMemoryMB / 1024.0, 0, 'f', 1)
+    .arg(m.m_totalBuilderThreads)
+    .arg(m.m_externalLoad ? " &nbsp;|&nbsp; <span style='color:#F44336'>Editor/Game detected</span>" : "");
+
+    m_metricsLabel->setText(text);
 }
 
 

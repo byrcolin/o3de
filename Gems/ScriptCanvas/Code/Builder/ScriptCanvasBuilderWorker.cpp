@@ -15,6 +15,7 @@
 #include <AzCore/Serialization/SerializeContext.h>
 #include <AzFramework/Script/ScriptComponent.h>
 #include <AzFramework/StringFunc/StringFunc.h>
+#include <AzCore/std/chrono/chrono.h>
 #include <Builder/ScriptCanvasBuilderWorker.h>
 #include <ScriptCanvas/Asset/RuntimeAsset.h>
 #include <ScriptCanvas/Asset/SubgraphInterfaceAsset.h>
@@ -255,12 +256,16 @@ namespace ScriptCanvasBuilder
             return;
         }
 
+        const auto loadStartTime = AZStd::chrono::high_resolution_clock::now();
         const auto result = LoadFromFile(request.m_fullPath, MakeInternalGraphEntitiesUnique::No);
+        const auto loadEndTime = AZStd::chrono::high_resolution_clock::now();
         if (!result)
         {
             AZ_Error(s_scriptCanvasBuilder, false, R"(Loading of ScriptCanvas asset for source file "%s" has failed)", fullPath.data());
             return;
         }
+        const auto loadMs = AZStd::chrono::duration_cast<AZStd::chrono::milliseconds>(loadEndTime - loadStartTime).count();
+        AZ_TracePrintf(s_scriptCanvasBuilder, "SC LOAD '%s' took %lld ms\n", fileNameOnly.c_str(), static_cast<long long>(loadMs));
 
         // Flush asset manager events to ensure no asset references are held by closures queued on Ebuses.
         AZ::Data::AssetManager::Instance().DispatchEvents();

@@ -19,6 +19,7 @@ namespace AssetProcessor
     {
         float m_cpuPercent = 0.0f;          // 0-100
         AZ::u64 m_availableMemoryMB = 0;
+        float m_memoryUsedPercent = 0.0f;   // 0-100 (like Task Manager)
         float m_diskIoBytesPerSec = 0.0f;
         float m_contextSwitchesPerSec = 0.0f;
     };
@@ -30,7 +31,7 @@ namespace AssetProcessor
     {
     public:
         ResourceMonitor();
-        ~ResourceMonitor() = default;
+        ~ResourceMonitor();
 
         //! Sample current system resources. Call periodically (e.g., every 1 second).
         void Sample();
@@ -40,6 +41,9 @@ namespace AssetProcessor
 
         //! Returns true if any resource metric exceeds its saturation threshold.
         bool IsSaturated(float cpuThreshold, AZ::u64 memoryMinMB, float contextSwitchBaselineMultiplier) const;
+
+        //! Get the baseline context switches per second (sampled during startup).
+        float GetBaselineContextSwitchesPerSec() const { return m_baselineContextSwitchesPerSec; }
 
     private:
         ResourceSnapshot m_current;
@@ -56,6 +60,22 @@ namespace AssetProcessor
         AZ::u64 m_prevDiskBytesWritten = 0;
         bool m_hasPrevDiskSample = false;
         AZStd::chrono::steady_clock::time_point m_prevDiskSampleTime;
+
+        // Context switch tracking via PDH
+        void* m_pdhQuery = nullptr;   // PDH_HQUERY
+        void* m_pdhCounter = nullptr; // PDH_HCOUNTER
+#elif defined(AZ_PLATFORM_LINUX)
+        AZ::u64 m_prevContextSwitches = 0;
+        bool m_hasPrevContextSwitchSample = false;
+        AZStd::chrono::steady_clock::time_point m_prevContextSwitchTime;
+#elif defined(AZ_PLATFORM_MAC)
+        AZ::u64 m_prevContextSwitches = 0;
+        bool m_hasPrevContextSwitchSample = false;
+        AZStd::chrono::steady_clock::time_point m_prevContextSwitchTime;
 #endif
+
+        // Baseline context switches/sec recorded after first few samples (before builders start)
+        float m_baselineContextSwitchesPerSec = 0.0f;
+        int m_baselineSamplesRemaining = 3;
     };
 } // namespace AssetProcessor

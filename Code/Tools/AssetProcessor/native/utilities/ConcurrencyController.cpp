@@ -23,6 +23,7 @@ namespace AssetProcessor
 
     ConcurrencyController::ConcurrencyController()
         : m_lastScaleTime(AZStd::chrono::steady_clock::now())
+        , m_lastLaunchCycleReset(AZStd::chrono::steady_clock::now())
     {
     }
 
@@ -49,6 +50,12 @@ namespace AssetProcessor
                 AZ_Printf(LogChannel, "  Hard cap: %u concurrent jobs\n", m_maxConcurrentCap);
             }
             AZ_Printf(LogChannel, "  Starting with %u concurrent job(s) at Normal priority.\n", m_targetConcurrent);
+
+            // Log per-key limits
+            for (const auto& [key, limit] : m_jobKeyLimits)
+            {
+                AZ_Printf(LogChannel, "  Per-key limit: \"%s\" = %u\n", key.c_str(), limit);
+            }
         }
         else
         {
@@ -68,11 +75,29 @@ namespace AssetProcessor
 
     AzFramework::ProcessPriority ConcurrencyController::GetLaunchPriority() const
     {
-        if (m_state == State::ExternalLoad)
+        // Builders always launch below normal priority so the rest of the system
+        // (and the AP coordinator itself) stays responsive.
+        return AzFramework::ProcessPriority::PROCESSPRIORITY_BELOWNORMAL;
+    }
+
+    unsigned int ConcurrencyController::GetPerKeyLimit(const AZStd::string& jobKey) const
+    {
+        // Check specific per-key limit first (exact match)
+        auto it = m_jobKeyLimits.find(jobKey);
+        if (it != m_jobKeyLimits.end())
         {
-            return AzFramework::ProcessPriority::PROCESSPRIORITY_BELOWNORMAL;
+            return it->second;
         }
-        return AzFramework::ProcessPriority::PROCESSPRIORITY_NORMAL;
+        // Check prefix match — e.g. "Shader Variant Asset" matches "Shader Variant Asset_varianttree"
+        for (const auto& [prefix, limit] : m_jobKeyLimits)
+        {
+            if (jobKey.starts_with(prefix))
+            {
+                return limit;
+            }
+        }
+        // Fall back to global per-key limit (0 = unlimited)
+        return m_perKeyLimit;
     }
 
     void ConcurrencyController::OnJobCompleted()
@@ -90,12 +115,61 @@ namespace AssetProcessor
         m_priorityManager.UnregisterPid(pid);
     }
 
-    void ConcurrencyController::Tick()
+    void ConcurrencyController::SetForeground(bool isForeground)
+    {
+        if (m_isForeground != isForeground)
+        {
+            m_isForeground = isForeground;
+            AZ_Printf(LogChannel, "AP window %s.\n", isForeground ? "foregrounded" : "backgrounded/minimized");
+        }
+    }
+
+    static const char* StateToString(ConcurrencyController::Metrics::State state)
+    {
+        switch (state)
+        {
+        case ConcurrencyController::Metrics::State::RampingUp: return "Ramping Up";
+        case ConcurrencyController::Metrics::State::Steady: return "Steady";
+        case ConcurrencyController::Metrics::State::ScalingDown: return "Scaling Down";
+        case ConcurrencyController::Metrics::State::ExternalLoad: return "External Load";
+        default: return "Unknown";
+        }
+    }
+
+    ConcurrencyController::Metrics ConcurrencyController::GetMetrics() const
+    {
+        Metrics m;
+        auto snapshot = m_resourceMonitor.GetSnapshot();
+        m.m_cpuPercent = snapshot.m_cpuPercent;
+        m.m_availableMemoryMB = snapshot.m_availableMemoryMB;
+        m.m_memoryUsedPercent = snapshot.m_memoryUsedPercent;
+        m.m_contextSwitchesPerSec = snapshot.m_contextSwitchesPerSec;
+        m.m_csBaselinePerSec = m_resourceMonitor.GetBaselineContextSwitchesPerSec();
+
+        m.m_state = static_cast<Metrics::State>(m_state);
+        m.m_stateName = StateToString(m.m_state);
+        m.m_activeBuilders = static_cast<unsigned int>(m_priorityManager.GetTrackedCount());
+        m.m_targetConcurrent = m_targetConcurrent;
+        m.m_jobsInFlight = m_jobsInFlight;
+        m.m_throughputJobsPerSec = m_throughputTracker.GetThroughput();
+
+        m.m_priorityName = "BelowNormal / Normal";
+        m.m_isForeground = m_isForeground;
+        m.m_externalLoad = (m_state == State::ExternalLoad);
+
+        m.m_totalBuilderMemoryMB = m_priorityManager.GetTotalBuilderMemoryMB();
+        m.m_totalBuilderThreads = m_priorityManager.GetTotalBuilderThreads();
+        return m;
+    }
+
+    void ConcurrencyController::Tick(unsigned int jobsInFlight)
     {
         if (!m_enabled)
         {
             return;
         }
+
+        m_jobsInFlight = jobsInFlight;
 
         // Sync tracked PIDs with actual running AssetBuilder processes
         auto currentPids = ProcessPriorityManager::FindProcessesByName("AssetBuilder.exe");
@@ -113,28 +187,35 @@ namespace AssetProcessor
         // Check for external load (Editor/Game)
         bool externalLoad = m_priorityManager.DetectExternalLoad();
 
+        // Fixed priority policy: the AP coordinator runs at Normal priority and
+        // builders run one tier below at BelowNormal. Boosting priorities when no
+        // Editor/game is running proved harmful in practice: the rest of the
+        // system suffered with no real throughput gain.
+#if defined(AZ_PLATFORM_WINDOWS)
+        if (!m_prioritiesApplied)
+        {
+            m_prioritiesApplied = true;
+            SetPriorityClass(GetCurrentProcess(), NORMAL_PRIORITY_CLASS);
+            AZ_Printf(LogChannel, "Priority → Builders: BelowNormal, AP: Normal.\n");
+        }
+        // No-ops when unchanged; normalizes any builders spawned before the policy applied
+        m_priorityManager.SetAllPriority(BELOW_NORMAL_PRIORITY_CLASS);
+#endif
+
         if (externalLoad && m_state != State::ExternalLoad)
         {
-            // Editor/Game just started — reduce priority and concurrency
+            // Editor/Game just started — reduce concurrency
             m_stateBeforeExternalLoad = m_state;
             TransitionTo(State::ExternalLoad);
-
-#if defined(AZ_PLATFORM_WINDOWS)
-            m_priorityManager.SetAllPriority(BELOW_NORMAL_PRIORITY_CLASS);
-#endif
-            // Reduce concurrency to half, minimum 2
             m_targetConcurrent = AZStd::GetMax(m_targetConcurrent / 2, 2u);
-            AZ_Printf(LogChannel, "External load detected. Reduced to %u jobs at Below Normal priority.\n", m_targetConcurrent);
+            AZ_Printf(LogChannel, "External load detected. Reduced to %u concurrent jobs.\n", m_targetConcurrent);
             return;
         }
         else if (!externalLoad && m_state == State::ExternalLoad)
         {
-            // Editor/Game exited — restore priority and resume scaling
-#if defined(AZ_PLATFORM_WINDOWS)
-            m_priorityManager.SetAllPriority(NORMAL_PRIORITY_CLASS);
-#endif
+            // Editor/Game exited — resume scaling
             TransitionTo(State::RampingUp);
-            AZ_Printf(LogChannel, "External load gone. Resuming at Normal priority, ramping up from %u.\n", m_targetConcurrent);
+            AZ_Printf(LogChannel, "External load gone. Resuming ramp-up from %u.\n", m_targetConcurrent);
             return;
         }
 
@@ -158,9 +239,19 @@ namespace AssetProcessor
 
     void ConcurrencyController::LoadSettings()
     {
+        // Set per-key defaults unconditionally (before registry, in case it's not ready yet)
+        // Shader compilation is not faster when serialized — individual jobs are inherently slow.
+        // Set to 0 (unlimited) and let the dynamic concurrency controller handle load.
+        // To test per-key limits, override via settings registry:
+        //   /Amazon/AssetProcessor/Settings/DynamicConcurrency/jobKeyLimits/Shader Asset
+        m_jobKeyLimits["Shader Asset"] = 0;
+        m_jobKeyLimits["Shader Variant Asset"] = 0;
+        m_jobKeyLimits["PrecompiledShader"] = 0;
+
         auto settingsRegistry = AZ::SettingsRegistry::Get();
         if (!settingsRegistry)
         {
+            AZ_Warning(LogChannel, false, "SettingsRegistry not available during LoadSettings — using hardcoded defaults for per-key limits.");
             return;
         }
 
@@ -213,6 +304,33 @@ namespace AssetProcessor
         {
             m_saturatedReadingsRequired = static_cast<unsigned int>(satReadings);
         }
+
+        AZ::s64 perKey = 0;
+        if (settingsRegistry->Get(perKey, (root + "/perKeyLimit").c_str()))
+        {
+            m_perKeyLimit = static_cast<unsigned int>(perKey);
+        }
+
+        // Per-type limits: configurable via settings registry.
+        // Default 0 = unlimited (let dynamic concurrency controller manage load).
+        // Override example: /Amazon/AssetProcessor/Settings/DynamicConcurrency/jobKeyLimits/Shader Asset
+        AZ::s64 shaderLimit = 0;
+        if (settingsRegistry->Get(shaderLimit, (root + "/jobKeyLimits/Shader Asset").c_str()))
+        {
+        }
+        m_jobKeyLimits["Shader Asset"] = static_cast<unsigned int>(shaderLimit);
+
+        AZ::s64 shaderVariantLimit = 0;
+        if (settingsRegistry->Get(shaderVariantLimit, (root + "/jobKeyLimits/Shader Variant Asset").c_str()))
+        {
+        }
+        m_jobKeyLimits["Shader Variant Asset"] = static_cast<unsigned int>(shaderVariantLimit);
+
+        AZ::s64 precompiledShaderLimit = 0;
+        if (settingsRegistry->Get(precompiledShaderLimit, (root + "/jobKeyLimits/PrecompiledShader").c_str()))
+        {
+        }
+        m_jobKeyLimits["PrecompiledShader"] = static_cast<unsigned int>(precompiledShaderLimit);
 
         // Also read the old maxJobs as a hard cap (backward compat)
         AZ::s64 oldMaxJobs = 0;
@@ -322,22 +440,21 @@ namespace AssetProcessor
                 break;
             }
 
-            // Stall detection: if throughput drops to 0 for too long while builders
-            // are supposedly running, we're likely in a deadlock scenario where
-            // builders are waiting for AP socket responses that can't be serviced.
+            // Stall detection: if throughput drops to 0 for too long AND no jobs
+            // are in flight, we may be deadlocked. But if jobs are in-flight, the
+            // builders are just working on slow assets (shaders can take 5-10 min).
             float currentThroughput = m_throughputTracker.GetThroughput();
-            if (currentThroughput == 0.0f && m_targetConcurrent > 1)
+            if (currentThroughput == 0.0f && m_targetConcurrent > 1 && m_jobsInFlight == 0)
             {
                 m_stallTickCount++;
                 if (m_stallTickCount >= StallTickThreshold)
                 {
-                    // Aggressive scale-down: halve concurrency to break the deadlock
+                    // Scale down: no jobs running and no throughput means dispatch is stuck
                     unsigned int newTarget = AZStd::GetMax(m_targetConcurrent / 2, 1u);
-                    AZ_Printf(LogChannel, "Stall detected (%u ticks with 0 throughput). Reducing from %u to %u concurrent.\n",
+                    AZ_Printf(LogChannel, "Stall detected (%u ticks with 0 throughput, 0 in-flight). Reducing from %u to %u concurrent.\n",
                         m_stallTickCount, m_targetConcurrent, newTarget);
                     m_targetConcurrent = newTarget;
                     m_stallTickCount = 0;
-                    // Stay in Steady — don't transition to RampingUp or ScalingDown
                 }
             }
             else
@@ -376,5 +493,31 @@ namespace AssetProcessor
         m_state = newState;
         m_saturatedReadingsCount = 0;
         m_lastScaleTime = AZStd::chrono::steady_clock::now();
+    }
+
+    bool ConcurrencyController::CanLaunchBuilder()
+    {
+        if (!m_enabled)
+        {
+            return true; // no rate limiting when controller is disabled
+        }
+
+        auto now = AZStd::chrono::steady_clock::now();
+        float elapsed = AZStd::chrono::duration<float>(now - m_lastLaunchCycleReset).count();
+
+        // Reset the launch counter every second
+        if (elapsed >= 1.0f)
+        {
+            m_launchesThisCycle = 0;
+            m_lastLaunchCycleReset = now;
+        }
+
+        if (m_launchesThisCycle >= MaxLaunchesPerSecond)
+        {
+            return false; // rate limit hit — try again on next dispatch cycle
+        }
+
+        m_launchesThisCycle++;
+        return true;
     }
 } // namespace AssetProcessor

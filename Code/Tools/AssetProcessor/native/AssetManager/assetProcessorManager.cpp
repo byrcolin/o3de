@@ -82,6 +82,10 @@ namespace AssetProcessor
 
         PopulateJobStateCache();
 
+        // Create the parallel CreateJobs dispatcher with 8 worker threads.
+        // Each worker thread gets its own builder process (dynamically spawned by BuilderManager).
+        m_createJobsDispatcher = AZStd::make_unique<CreateJobsDispatcher>(8);
+
         AssetProcessor::ProcessingJobInfoBus::Handler::BusConnect();
         AZ::Interface<AssetProcessor::RecognizerConfiguration>::Register(m_platformConfig);
     }
@@ -2348,7 +2352,8 @@ namespace AssetProcessor
         }
     }
 
-    void AssetProcessorManager::CheckModifiedSourceFile(const SourceAssetReference& sourceAsset, const ScanFolderInfo* scanFolderInfo)
+    void AssetProcessorManager::CheckModifiedSourceFile(const SourceAssetReference& sourceAsset, const ScanFolderInfo* scanFolderInfo,
+        AZStd::vector<CreateJobsBatchEntry>* createJobsBatches)
     {
         // a potential input file was modified or added.  We always pass these through our filters and potentially build it.
         // before we know what to do, we need to figure out if it matches some filter we care about.
@@ -2378,7 +2383,14 @@ namespace AssetProcessor
         if (builderInfoList.size())
         {
             ++m_numSourcesNeedingFullAnalysis;
-            ProcessBuilders(sourceAsset, scanFolderInfo, builderInfoList);
+            if (createJobsBatches)
+            {
+                PrepareCreateJobsBatch(sourceAsset, scanFolderInfo, builderInfoList, *createJobsBatches);
+            }
+            else
+            {
+                ProcessBuilders(sourceAsset, scanFolderInfo, builderInfoList);
+            }
         }
         else
         {
@@ -2778,6 +2790,12 @@ namespace AssetProcessor
         // that is, the path is normalized
         // and only has forward slashes.
 
+        // Guard against re-entrance (processEvents() during micro-batch wait can trigger this slot again)
+        if (m_insideCreateJobsBatch)
+        {
+            return;
+        }
+
         if (!m_platformConfig)
         {
             // this cannot be recovered from
@@ -2828,6 +2846,11 @@ namespace AssetProcessor
 
         int i = -1; // Starting at -1 so we can increment at the start of the loop instead of the end due to all the control flow that occurs inside the loop
         m_queuedExamination = false;
+
+        // Collect CreateJobs work for parallel dispatch
+        AZStd::vector<CreateJobsBatchEntry> createJobsBatches;
+        m_createJobsDispatcher->Reset();
+
         for (const FileEntry& examineFile : swapped)
         {
             ++i;
@@ -3137,8 +3160,47 @@ namespace AssetProcessor
 
                     // log-spam-reduction - the lack of the prior tag (input was deleted) which is rare can infer that the above branch was taken
                     //AZ_TracePrintf(AssetProcessor::DebugChannel, "Input is modified or is overriding something.\n");
-                    CheckModifiedSourceFile(sourceAssetReference, scanFolderInfo);
+                    CheckModifiedSourceFile(sourceAssetReference, scanFolderInfo, &createJobsBatches);
                 }
+            }
+        }
+
+        // Phase 2: Process parallel CreateJobs in micro-batches to keep UI responsive
+        if (!createJobsBatches.empty())
+        {
+            constexpr int MicroBatchSize = 64;
+            int totalItems = static_cast<int>(m_createJobsDispatcher->NumPending());
+            AZ_TracePrintf(AssetProcessor::ConsoleChannel, "Processing %d CreateJobs items in micro-batches of %d (%d workers)...\n",
+                totalItems, MicroBatchSize, m_createJobsDispatcher->NumWorkers());
+
+            // Dispatch all items at once — workers start immediately
+            m_createJobsDispatcher->DispatchAll();
+            m_insideCreateJobsBatch = true;
+
+            // Wait in chunks, pumping Qt events between each chunk to keep UI responsive
+            int waited = 0;
+            while (waited < totalItems)
+            {
+                int target = AZStd::min(waited + MicroBatchSize, totalItems);
+                m_createJobsDispatcher->WaitForCount(target);
+                waited = target;
+
+                // Pump the event loop so the UI doesn't freeze
+                if (waited < totalItems)
+                {
+                    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 1);
+                }
+            }
+            m_insideCreateJobsBatch = false;
+
+            // Process results for all batches on the main thread
+            for (auto& batch : createJobsBatches)
+            {
+                if (m_quitRequested)
+                {
+                    return;
+                }
+                ProcessCreateJobsBatchResults(batch);
             }
         }
 
@@ -4440,6 +4502,307 @@ namespace AssetProcessor
 
         // Signals SourceAssetTreeModel so it can update the CreateJobs duration change
         Q_EMIT CreateJobsDurationChanged(sourceAsset.RelativePath().c_str(), sourceAsset.ScanFolderId());
+    }
+
+    void AssetProcessorManager::PrepareCreateJobsBatch(
+        const SourceAssetReference& sourceAsset,
+        const ScanFolderInfo* scanFolder,
+        const AssetProcessor::BuilderInfoList& builderInfoList,
+        AZStd::vector<CreateJobsBatchEntry>& outBatches)
+    {
+        // Same initial setup as ProcessBuilders, but instead of calling m_createJobFunction synchronously,
+        // we submit work items to the CreateJobsDispatcher for parallel execution.
+
+        auto sourceUUIDOutcome = AssetUtilities::GetSourceUuid(sourceAsset);
+
+        if (!sourceUUIDOutcome)
+        {
+            auto failureMessage = AZStd::string::format(
+                "CreateJobs failed - %s", sourceUUIDOutcome.GetError().c_str());
+            AZ::Uuid builderUuid = builderInfoList.size() > 0 ? builderInfoList[0].m_busId : AZ::Uuid();
+            AutoFailJob(
+                failureMessage, failureMessage,
+                JobEntry(sourceAsset, builderUuid, { "all", {} },
+                    QString("CreateJobs_%1").arg(builderUuid.ToFixedString().c_str()),
+                    0, GenerateNewJobRunKey(), AZ::Uuid(), false));
+            return;
+        }
+
+        const AZ::Uuid sourceUUID = sourceUUIDOutcome.GetValue();
+
+        {
+            AZStd::lock_guard<AZStd::mutex> lock(m_sourceUUIDToSourceInfoMapMutex);
+            m_sourceUUIDToSourceInfoMap[sourceUUID] = sourceAsset;
+        }
+
+        // Insert into analysis tracker
+        auto resultInsert = m_remainingJobsForEachSourceFile.insert_key(sourceAsset.AbsolutePath().c_str());
+        AnalysisTracker& analysisTracker = resultInsert.first->second;
+        analysisTracker.m_databaseSourceName = sourceAsset.RelativePath().c_str();
+        analysisTracker.m_databaseScanFolderId = scanFolder->ScanFolderID();
+        analysisTracker.m_buildersInvolved.clear();
+        for (const AssetBuilderSDK::AssetBuilderDesc& builderInfo : builderInfoList)
+        {
+            analysisTracker.m_buildersInvolved.insert(builderInfo.m_busId);
+        }
+
+        CreateJobsBatchEntry batch;
+        batch.m_sourceAsset = sourceAsset;
+        batch.m_scanFolder = scanFolder;
+        batch.m_sourceUUID = sourceUUID;
+
+        for (const AssetBuilderSDK::AssetBuilderDesc& builderInfo : builderInfoList)
+        {
+            if (builderInfo.m_busId.IsNull())
+            {
+                AZ_TracePrintf(AssetProcessor::DebugChannel, "Skipping builder %s, no builder bus id defined.\n", builderInfo.m_name.data());
+                continue;
+            }
+
+            AZStd::vector<AssetBuilderSDK::PlatformInfo> platforms = scanFolder->GetPlatforms();
+            const AssetBuilderSDK::CreateJobsRequest createJobsRequest(
+                builderInfo.m_busId, sourceAsset.RelativePath().c_str(),
+                scanFolder->ScanPath().toUtf8().constData(), platforms, sourceUUID);
+
+            AZ::s64 runKey = GenerateNewJobRunKey();
+            AZStd::string logFileName = AssetUtilities::ComputeJobLogFileName(createJobsRequest);
+
+            // Submit the blocking CreateJobs call to the worker thread pool
+            CreateJobsDispatcher::WorkItem workItem;
+            workItem.m_createJobFunction = builderInfo.m_createJobFunction;
+            workItem.m_request = createJobsRequest;
+            workItem.m_runKey = runKey;
+            workItem.m_logFileName = logFileName;
+
+            int dispatchIndex = m_createJobsDispatcher->Submit(AZStd::move(workItem));
+
+            CreateJobsBatchEntry::BuilderWorkItem builderWorkItem;
+            builderWorkItem.m_builderDesc = builderInfo;
+            builderWorkItem.m_dispatchIndex = dispatchIndex;
+            builderWorkItem.m_runKey = runKey;
+            batch.m_builderItems.push_back(AZStd::move(builderWorkItem));
+        }
+
+        outBatches.push_back(AZStd::move(batch));
+    }
+
+    void AssetProcessorManager::ProcessCreateJobsBatchResults(CreateJobsBatchEntry& batch)
+    {
+        // Process completed CreateJobs responses on the main thread.
+        // This mirrors the response-processing section of ProcessBuilders.
+        JobToProcessEntry entry;
+
+        for (auto& builderItem : batch.m_builderItems)
+        {
+            const auto& builderInfo = builderItem.m_builderDesc;
+            auto& result = m_createJobsDispatcher->GetResult(builderItem.m_dispatchIndex);
+            auto& createJobsResponse = result.m_response;
+            AZ::s64 runKey = builderItem.m_runKey;
+            const auto& logFileName = result.m_logFileName;
+
+            bool isBuilderMissingFingerprint = (createJobsResponse.m_result == AssetBuilderSDK::CreateJobsResultCode::Success
+                && !createJobsResponse.m_createJobOutputs.empty()
+                && !createJobsResponse.m_createJobOutputs[0].m_additionalFingerprintInfo.empty()
+                && builderInfo.m_analysisFingerprint.empty());
+
+            if (createJobsResponse.m_result == AssetBuilderSDK::CreateJobsResultCode::Failed || isBuilderMissingFingerprint)
+            {
+                AZStd::string fullPathToLogFile = AssetUtilities::ComputeJobLogFolder();
+                fullPathToLogFile += "/";
+                fullPathToLogFile += logFileName.c_str();
+                char resolvedBuffer[AZ_MAX_PATH_LEN] = { 0 };
+                AZ::IO::FileIOBase::GetInstance()->ResolvePath(fullPathToLogFile.c_str(), resolvedBuffer, AZ_MAX_PATH_LEN);
+
+                AssetJobLogResponse response;
+                AZStd::string failureMessage;
+
+                if (isBuilderMissingFingerprint)
+                {
+                    failureMessage = AZStd::string::format(
+                        "CreateJobs of %s has failed.\n"
+                        "The builder (%s, %s) job response contained non-empty m_additionalFingerprintInfo but the builder itself does not contain a fingerprint.\n"
+                        "Builders must provide a fingerprint so the Asset Processor can detect changes that may require assets to be reprocessed.\n"
+                        "This is a coding error.  Please update the builder to include an m_analysisFingerprint in its registration.\n",
+                        batch.m_sourceAsset.AbsolutePath().c_str(),
+                        builderInfo.m_name.c_str(),
+                        builderInfo.m_busId.ToString<AZStd::string>().c_str());
+                }
+                else
+                {
+                    failureMessage = AZStd::string::format(
+                        "CreateJobs of %s has failed.\n"
+                        "This is often because the asset is corrupt.\n"
+                        "Please load it in the editor to see what might be wrong.\n",
+                        batch.m_sourceAsset.AbsolutePath().c_str());
+                    AssetUtilities::ReadJobLog(resolvedBuffer, response);
+                }
+
+                AutoFailJob(AZStd::string::format("Createjobs Failed: %s.\n", batch.m_sourceAsset.AbsolutePath().c_str()),
+                    failureMessage,
+                    JobEntry(batch.m_sourceAsset, builderInfo.m_busId, { "all", {} },
+                        QString("CreateJobs_%1").arg(builderInfo.m_busId.ToString<AZStd::string>().c_str()),
+                        0, runKey, batch.m_sourceUUID, false),
+                    response.m_jobLog);
+                continue;
+            }
+            else if (createJobsResponse.m_result == AssetBuilderSDK::CreateJobsResultCode::ShuttingDown)
+            {
+                return;
+            }
+            else
+            {
+                {
+                    AzToolsFramework::AssetSystem::JobInfo jobInfo;
+                    jobInfo.m_sourceFile = batch.m_sourceAsset.RelativePath().Native();
+                    jobInfo.m_watchFolder = batch.m_sourceAsset.ScanFolderPath().Native();
+                    jobInfo.m_platform = "all";
+                    jobInfo.m_jobKey = AZStd::string::format("CreateJobs_%s", builderInfo.m_busId.ToString<AZStd::string>().c_str());
+                    Q_EMIT JobRemoved(jobInfo);
+                }
+
+                int numJobDependencies = 0;
+
+                for (AssetBuilderSDK::JobDescriptor& jobDescriptor : createJobsResponse.m_createJobOutputs)
+                {
+                    AssetProcessor::BuilderConfigurationRequestBus::Broadcast(
+                        &AssetProcessor::BuilderConfigurationRequests::UpdateJobDescriptor, jobDescriptor.m_jobKey, jobDescriptor);
+
+                    const AssetBuilderSDK::PlatformInfo* const infoForPlatform =
+                        m_platformConfig->GetPlatformByIdentifier(jobDescriptor.GetPlatformIdentifier().c_str());
+
+                    if (!infoForPlatform)
+                    {
+                        AZ_Warning(AssetProcessor::ConsoleChannel, infoForPlatform,
+                            "CODE BUG: Builder %s emitted jobs for a platform that isn't enabled (%s).  This job will be "
+                            "discarded.  Builders should check the input list of platforms and only emit jobs for platforms "
+                            "in that list", builderInfo.m_name.c_str(), jobDescriptor.GetPlatformIdentifier().c_str());
+                        continue;
+                    }
+
+                    bool jobPlatformValidationFailed = false;
+                    for (auto& jobDependency : jobDescriptor.m_jobDependencyList)
+                    {
+                        if (jobDependency.m_platformIdentifier.compare(AssetBuilderSDK::CommonPlatformName) != 0)
+                        {
+                            if (jobDescriptor.GetPlatformIdentifier() != jobDependency.m_platformIdentifier)
+                            {
+                                AZStd::string failureMessage = AZStd::string::format(
+                                    "Invalid Job Dependency emitted for %s.\n"
+                                    "    The builder (%s, %s) emitted a job for one platform that depends on a job for a different platform\n"
+                                    "    Jobs can only depend on the \"%s\" platform or other jobs for the same platform.\n"
+                                    "    This is a code error, not a problem with the assets - please modify the builder to emit job\n"
+                                    "    dependencies correctly.\n"
+                                    "      Source Job: (platform \"%s\", job Key: \"%s\")\n"
+                                    "      Depends on: (platform \"%s\", job Key: \"%s\", source file: \"%s\")",
+                                    batch.m_sourceAsset.AbsolutePath().c_str(),
+                                    builderInfo.m_name.c_str(),
+                                    builderInfo.m_busId.ToString<AZStd::string>().c_str(),
+                                    AssetBuilderSDK::CommonPlatformName,
+                                    jobDescriptor.GetPlatformIdentifier().c_str(),
+                                    jobDescriptor.m_jobKey.c_str(),
+                                    jobDependency.m_platformIdentifier.c_str(),
+                                    jobDependency.m_jobKey.c_str(),
+                                    jobDependency.m_sourceFile.ToString().c_str());
+
+                                jobPlatformValidationFailed = true;
+                                JobEntry failingJob(batch.m_sourceAsset, builderInfo.m_busId, *infoForPlatform,
+                                    jobDescriptor.m_jobKey.c_str(), 0, GenerateNewJobRunKey(), batch.m_sourceUUID);
+                                AutoFailJob(AZStd::string::format("Invalid Job Dependency: %s.\n", batch.m_sourceAsset.AbsolutePath().c_str()),
+                                    failureMessage, failingJob, "");
+                                break;
+                            }
+                        }
+                    }
+                    if (jobPlatformValidationFailed)
+                    {
+                        continue;
+                    }
+
+                    {
+                        JobDetails newJob;
+                        newJob.m_assetBuilderDesc = builderInfo;
+                        newJob.m_critical = jobDescriptor.m_critical;
+                        newJob.m_extraInformationForFingerprinting = AZStd::string::format(
+                            "%i%s", builderInfo.m_version, jobDescriptor.m_additionalFingerprintInfo.c_str());
+                        newJob.m_jobEntry = JobEntry(
+                            batch.m_sourceAsset, builderInfo.m_busId, *infoForPlatform,
+                            jobDescriptor.m_jobKey.c_str(), 0, GenerateNewJobRunKey(), batch.m_sourceUUID);
+                        newJob.m_jobEntry.m_checkExclusiveLock = jobDescriptor.m_checkExclusiveLock;
+                        newJob.m_jobParam = AZStd::move(jobDescriptor.m_jobParameters);
+                        newJob.m_priority = jobDescriptor.m_priority;
+                        newJob.m_scanFolder = batch.m_scanFolder;
+                        newJob.m_checkServer = jobDescriptor.m_checkServer;
+
+                        auto* uuidInterface = AZ::Interface<AssetProcessor::IUuidRequests>::Get();
+                        if (!uuidInterface)
+                        {
+                            AZ_Assert(uuidInterface, "Programmer Error - IUuidRequests interface is not available.");
+                            return;
+                        }
+
+                        const bool isEnabledType = uuidInterface->IsGenerationEnabledForFile(batch.m_sourceAsset.AbsolutePath());
+                        newJob.m_sourceUuid = isEnabledType ? batch.m_sourceUUID : AZ::Uuid{};
+
+                        if (m_builderDebugFlag)
+                        {
+                            newJob.m_jobParam[AZ_CRC_CE("DebugFlag")] = "true";
+                        }
+
+                        AZStd::unordered_set<AssetBuilderSDK::JobDependency> jobDependenciesDuplicateCheck;
+                        for (const AssetBuilderSDK::JobDependency& jobDependency : jobDescriptor.m_jobDependencyList)
+                        {
+                            if (auto dupResult = jobDependenciesDuplicateCheck.insert(jobDependency); !dupResult.second)
+                            {
+                                continue;
+                            }
+                            newJob.m_jobDependencyList.push_back(JobDependencyInternal(jobDependency));
+                            ++numJobDependencies;
+                        }
+
+                        JobDesc jobDesc(newJob.m_jobEntry.m_sourceAssetReference,
+                            newJob.m_jobEntry.m_jobKey.toUtf8().data(),
+                            newJob.m_jobEntry.m_platformInfo.m_identifier);
+                        m_jobDescToBuilderUuidMap[jobDesc].insert(builderInfo.m_busId);
+
+                        JobIndentifier jobIdentifier(jobDesc, builderInfo.m_busId);
+                        {
+                            AZStd::lock_guard<AssetProcessor::ProcessingJobInfoBus::MutexType> lock(
+                                AssetProcessor::ProcessingJobInfoBus::GetOrCreateContext().m_contextMutex);
+                            m_jobFingerprintMap.erase(jobIdentifier);
+                        }
+
+                        entry.m_jobsToAnalyze.push_back(AZStd::move(newJob));
+                        UpdateAnalysisTrackerForFile(batch.m_sourceAsset, AnalysisTrackerUpdateType::JobStarted);
+                        m_numOfJobsToAnalyze++;
+                    }
+                }
+
+                if ((!createJobsResponse.m_sourceFileDependencyList.empty()) || (numJobDependencies > 0))
+                {
+                    if ((builderInfo.m_flags & AssetBuilderSDK::AssetBuilderDesc::BF_EmitsNoDependencies) != 0)
+                    {
+                        AZ_WarningOnce(
+                            ConsoleChannel, false,
+                            "Asset builder '%s' registered itself using BF_EmitsNoDependencies flag, but actually emitted dependencies.  "
+                            "This will cause rebuilds to be inconsistent.\n",
+                            builderInfo.m_name.c_str());
+                    }
+
+                    for (const AssetBuilderSDK::SourceFileDependency& sourceDependency : createJobsResponse.m_sourceFileDependencyList)
+                    {
+                        entry.m_sourceFileDependencies.push_back(AZStd::make_pair(builderInfo.m_busId, sourceDependency));
+                    }
+                }
+            }
+        }
+
+        entry.m_sourceFileInfo.m_sourceAssetReference = batch.m_sourceAsset;
+        entry.m_sourceFileInfo.m_scanFolder = batch.m_scanFolder;
+        entry.m_sourceFileInfo.m_uuid = batch.m_sourceUUID;
+
+        UpdateSourceFileDependenciesDatabase(entry);
+        m_jobEntries.push_back(entry);
+        Q_EMIT CreateJobsDurationChanged(batch.m_sourceAsset.RelativePath().c_str(), batch.m_sourceAsset.ScanFolderId());
     }
 
     bool AssetProcessorManager::ResolveSourceFileDependencyPath(AssetBuilderSDK::SourceFileDependency& sourceDependency, QString& resultDatabaseSourceName, QStringList& resolvedDependencyList)

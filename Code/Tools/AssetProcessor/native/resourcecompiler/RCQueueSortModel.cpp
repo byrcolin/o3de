@@ -84,7 +84,7 @@ namespace AssetProcessor
         AZ_Printf(AssetProcessor::ConsoleChannel, "------------------------------------------------------------\n");
     }
 
-    RCJob* RCQueueSortModel::GetNextPendingJob()
+    RCJob* RCQueueSortModel::GetNextPendingJob(const QSet<QString>* excludeKeys)
     {
         using namespace RCQueueSortModel_Internal;
 
@@ -224,6 +224,12 @@ namespace AssetProcessor
                             continue;
                         }
 
+                    }
+
+                    // Skip jobs whose key is in the exclude set (per-key cap reached)
+                    if (excludeKeys && excludeKeys->contains(actualJob->GetJobKey()))
+                    {
+                        continue;
                     }
 
                     return actualJob;

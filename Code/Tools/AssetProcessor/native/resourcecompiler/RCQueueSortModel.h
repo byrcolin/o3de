@@ -43,7 +43,7 @@ namespace AssetProcessor
         explicit RCQueueSortModel(QObject* parent = 0);
 
         void AttachToModel(RCJobListModel* target);
-        RCJob* GetNextPendingJob();
+        RCJob* GetNextPendingJob(const QSet<QString>* excludeKeys = nullptr);
 
         void AddJobIdEntry(AssetProcessor::RCJob* rcJob);
         void RemoveJobIdEntry(AssetProcessor::RCJob* rcJob);

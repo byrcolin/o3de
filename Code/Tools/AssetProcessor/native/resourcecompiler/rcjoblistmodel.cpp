@@ -77,6 +77,19 @@ namespace AssetProcessor
         return static_cast<unsigned int>(m_jobsInFlight.size());
     }
 
+    unsigned int RCJobListModel::jobsInFlightByKey(const QString& jobKey) const
+    {
+        unsigned int count = 0;
+        for (const auto* job : m_jobsInFlight)
+        {
+            if (job->GetJobKey() == jobKey)
+            {
+                ++count;
+            }
+        }
+        return count;
+    }
+
     unsigned int RCJobListModel::jobsInQueueWithoutMissingDependencies() const
     {
         unsigned int jobsWithNoMissingDependencies = 0;

@@ -11,4 +11,6 @@ set(FILES
     ../../RHI.Builders/ShaderPlatformInterfaceSystemComponent.cpp
     ../../RHI.Builders/ShaderPlatformInterface.h
     ../../RHI.Builders/ShaderPlatformInterface.cpp
+    ../../RHI.Builders/DxcCompilerLibrary.h
+    ../../RHI.Builders/DxcCompilerLibrary.cpp
 )

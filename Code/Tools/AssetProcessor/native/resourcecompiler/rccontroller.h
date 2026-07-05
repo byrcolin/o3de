@@ -48,6 +48,8 @@ namespace AssetProcessor
 
         AssetProcessor::RCJobListModel* GetQueueModel();
 
+        ConcurrencyController& GetConcurrencyController() { return m_concurrencyController; }
+
         void StartJob(AssetProcessor::RCJob* rcJob);
         int NumberOfPendingCriticalJobsPerPlatform(QString platform);
 

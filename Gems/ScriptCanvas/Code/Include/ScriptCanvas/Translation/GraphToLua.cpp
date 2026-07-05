@@ -134,8 +134,7 @@ namespace ScriptCanvas
             WriteHeader();
             TranslateDependencies();
             TranslateClassOpen();   
-            TranslateBody(BuildConfiguration::Release);
-            TranslateBody(BuildConfiguration::Performance);
+            TranslateBody(BuildConfiguration::Release); // Release and Performance generate identical code, merged into one block
             TranslateBody(BuildConfiguration::Debug);
             TranslateClassClose();
             MarkTranslationStop();
@@ -305,9 +304,10 @@ namespace ScriptCanvas
 
             if (configuration == BuildConfiguration::Release)
             {
-                m_dotLua.WriteLine("if _G.%s then", Grammar::k_InterpretedConfigurationRelease);
+                // Release and Performance generate identical code, so merge them into one branch
+                m_dotLua.WriteLine("if _G.%s or _G.%s then", Grammar::k_InterpretedConfigurationRelease, Grammar::k_InterpretedConfigurationPerformance);
                 m_dotLua.WriteLine(k_stars);
-                m_dotLua.WriteLine("-- ****** release configuration, no debug information available, no performance markers");
+                m_dotLua.WriteLine("-- ****** release/performance configuration, no debug information available");
                 m_dotLua.WriteNewLine();
             }
 
@@ -315,16 +315,7 @@ namespace ScriptCanvas
 
             if (configuration == BuildConfiguration::Release)
             {
-                m_dotLua.WriteLine("-- ***** end release configuration");
-                m_dotLua.WriteLine(k_stars);
-                m_dotLua.WriteLine("elseif _G.%s then", Grammar::k_InterpretedConfigurationPerformance);
-                m_dotLua.WriteLine(k_stars);
-                m_dotLua.WriteLine("-- ***** performance configuration, no debug information available, performance markers in place");
-                m_dotLua.WriteNewLine();
-            }
-            else if (configuration == BuildConfiguration::Performance)
-            {
-                m_dotLua.WriteLine("-- ***** end performance configuration");
+                m_dotLua.WriteLine("-- ***** end release/performance configuration");
                 m_dotLua.WriteLine(k_stars);
                 m_dotLua.WriteLine("else");
                 m_dotLua.WriteLine(k_stars);

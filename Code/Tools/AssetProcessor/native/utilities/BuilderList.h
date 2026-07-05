@@ -12,8 +12,9 @@
 
 namespace AssetProcessor
 {
-    //! Helper class that keeps track of the Builders and manages reserving a builder specifically for CreateJobs
-    //! This class is not inherently thread-safe and must be locked before any access
+    //! Helper class that keeps track of the Builders and manages reserving a builder specifically for CreateJobs.
+    //! Supports a pool of CreateJobs builders for parallel CreateJobs dispatch.
+    //! This class is not inherently thread-safe and must be locked before any access.
     class BuilderList
     {
     public:
@@ -30,6 +31,6 @@ namespace AssetProcessor
 
     protected:
         AZStd::unordered_map<AZ::Uuid, AZStd::shared_ptr<Builder>> m_builders;
-        AZStd::shared_ptr<Builder> m_createJobsBuilder; // Special builder reserved for create jobs to ensure CreateJobs never waits for process startup
+        AZStd::vector<AZStd::shared_ptr<Builder>> m_createJobsBuilders; // Pool of builders reserved for CreateJobs (supports parallel dispatch)
     };
 } // namespace AssetProcessor

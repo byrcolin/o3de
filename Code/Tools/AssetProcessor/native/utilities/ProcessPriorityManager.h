@@ -35,6 +35,15 @@ namespace AssetProcessor
         //! Returns true if Editor.exe or a game launcher is currently running.
         bool DetectExternalLoad() const;
 
+        //! Returns the number of tracked builder PIDs.
+        size_t GetTrackedCount() const;
+
+        //! Returns total working set (MB) across all tracked builder processes.
+        AZ::u64 GetTotalBuilderMemoryMB() const;
+
+        //! Returns total thread count across all tracked builder processes.
+        unsigned int GetTotalBuilderThreads() const;
+
         //! Find PIDs of processes matching a given executable name.
         //! Used to discover newly-spawned AssetBuilder processes.
         static AZStd::set<AZ::u32> FindProcessesByName(const char* exeName);
