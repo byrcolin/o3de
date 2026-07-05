@@ -3165,31 +3165,26 @@ namespace AssetProcessor
             }
         }
 
-        // Phase 2: Process parallel CreateJobs in micro-batches to keep UI responsive
+        // Phase 2: Run parallel CreateJobs, pumping the event loop while we wait.
         if (!createJobsBatches.empty())
         {
-            constexpr int MicroBatchSize = 64;
             int totalItems = static_cast<int>(m_createJobsDispatcher->NumPending());
-            AZ_TracePrintf(AssetProcessor::ConsoleChannel, "Processing %d CreateJobs items in micro-batches of %d (%d workers)...\n",
-                totalItems, MicroBatchSize, m_createJobsDispatcher->NumWorkers());
+            AZ_TracePrintf(AssetProcessor::ConsoleChannel, "Processing %d CreateJobs items on %d workers...\n",
+                totalItems, m_createJobsDispatcher->NumWorkers());
 
             // Dispatch all items at once — workers start immediately
             m_createJobsDispatcher->DispatchAll();
             m_insideCreateJobsBatch = true;
 
-            // Wait in chunks, pumping Qt events between each chunk to keep UI responsive
-            int waited = 0;
-            while (waited < totalItems)
+            // CRITICAL: builder responses are delivered via queued signals on THIS thread
+            // (ConnectionWorker -> Connection::ReceiveMessage -> InvokeResponseHandler).
+            // If we block here without pumping the event queue, responses are never
+            // delivered and every in-flight CreateJobs times out after 120 seconds.
+            // So wait in short slices and pump the event loop between them.
+            while (!m_createJobsDispatcher->IsComplete() && !m_quitRequested)
             {
-                int target = AZStd::min(waited + MicroBatchSize, totalItems);
-                m_createJobsDispatcher->WaitForCount(target);
-                waited = target;
-
-                // Pump the event loop so the UI doesn't freeze
-                if (waited < totalItems)
-                {
-                    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 1);
-                }
+                m_createJobsDispatcher->WaitForProgress(AZStd::chrono::milliseconds(10));
+                QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 5);
             }
             m_insideCreateJobsBatch = false;
 

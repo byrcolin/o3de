@@ -7,6 +7,7 @@
  */
 #pragma once
 
+#include <AzCore/std/chrono/chrono.h>
 #include <AzCore/std/containers/queue.h>
 #include <AzCore/std/containers/vector.h>
 #include <AzCore/std/functional.h>
@@ -55,10 +56,14 @@ namespace AssetProcessor
         size_t NumPending() const { return m_items.size(); }
 
         //! Block until all submitted work items have completed.
+        //! WARNING: do not call from the AP main thread — builder responses are delivered
+        //! via queued signals on the main thread, so blocking it starves response delivery.
         void WaitForAll();
 
-        //! Block until at least 'count' work items have completed. Returns current completed count.
-        int WaitForCount(int count);
+        //! Block until at least one more work item completes, all work is done, or the
+        //! timeout expires — whichever comes first. Safe to call from the main thread in a
+        //! loop that pumps the Qt event queue between calls. Returns current completed count.
+        int WaitForProgress(AZStd::chrono::milliseconds timeout);
 
         //! Returns true if all submitted work items have completed.
         bool IsComplete() const;

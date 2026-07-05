@@ -74,12 +74,14 @@ namespace AssetProcessor
         });
     }
 
-    int CreateJobsDispatcher::WaitForCount(int count)
+    int CreateJobsDispatcher::WaitForProgress(AZStd::chrono::milliseconds timeout)
     {
         AZStd::unique_lock<AZStd::mutex> lock(m_completionMutex);
-        m_completionCV.wait(lock, [this, count]()
+        const int startCount = m_completedCount.load();
+        m_completionCV.wait_for(lock, timeout, [this, startCount]()
         {
-            return m_completedCount.load() >= count;
+            return m_completedCount.load() > startCount ||
+                m_completedCount.load() >= static_cast<int>(m_items.size());
         });
         return m_completedCount.load();
     }
