@@ -2790,9 +2790,15 @@ namespace AssetProcessor
         // that is, the path is normalized
         // and only has forward slashes.
 
-        // Guard against re-entrance (processEvents() during micro-batch wait can trigger this slot again)
+        // Guard against re-entrance (processEvents() during the CreateJobs batch wait can
+        // trigger this slot again). This invocation IS the scheduled examination call being
+        // consumed (m_queuedExamination is likely true), so unconditionally schedule a
+        // replacement — otherwise the flag stays true forever and CheckSource never
+        // schedules another pass, permanently stalling the pipeline.
         if (m_insideCreateJobsBatch)
         {
+            m_queuedExamination = true;
+            QTimer::singleShot(250, this, SLOT(ProcessFilesToExamineQueue()));
             return;
         }
 

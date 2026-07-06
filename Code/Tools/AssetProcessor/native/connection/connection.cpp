@@ -353,7 +353,11 @@ void Connection::OnConnectionDisconnect()
 void Connection::OnConnectionEstablished(QString ipAddress, quint16 port)
 {
     connect(this, &Connection::SendMessage, m_connectionWorker, &AssetProcessor::ConnectionWorker::SendMessage, Qt::UniqueConnection);
-    connect(m_connectionWorker, &AssetProcessor::ConnectionWorker::ReceiveMessage, this, &Connection::ReceiveMessage, Qt::UniqueConnection);
+    // DirectConnection: ReceiveMessage runs on the connection worker thread. Response
+    // messages are handled there directly (see Connection::ReceiveMessage); all other
+    // messages are re-emitted via DeliverMessage which auto-queues to the main thread.
+    connect(m_connectionWorker, &AssetProcessor::ConnectionWorker::ReceiveMessage, this, &Connection::ReceiveMessage,
+        static_cast<Qt::ConnectionType>(Qt::DirectConnection | Qt::UniqueConnection));
 
     m_elapsed = 0;
     m_elapsedTimer.start();
@@ -369,6 +373,20 @@ void Connection::OnConnectionEstablished(QString ipAddress, quint16 port)
 
 void Connection::ReceiveMessage(unsigned int type, unsigned int serial, QByteArray payload)
 {
+    // NOTE: runs on the connection worker thread (DirectConnection).
+    // Responses to outstanding requests are dispatched here directly instead of being
+    // queued through the main-thread event loop. Threads blocked in Builder::RunJob
+    // (e.g. parallel CreateJobs workers) are unblocked immediately even when the main
+    // thread is busy — previously responses could stall behind main-thread work and
+    // hit the 120s builder timeout. The handler callbacks only copy the payload and
+    // release a semaphore, so they are safe to invoke from this thread.
+    if (serial & AzFramework::AssetSystem::RESPONSE_SERIAL_FLAG)
+    {
+        serial &= ~AzFramework::AssetSystem::RESPONSE_SERIAL_FLAG; // Clear the bit
+        InvokeResponseHandler(serial, type, payload);
+        return;
+    }
+
     Q_EMIT DeliverMessage(m_connectionId, type, serial, payload);
 }
 

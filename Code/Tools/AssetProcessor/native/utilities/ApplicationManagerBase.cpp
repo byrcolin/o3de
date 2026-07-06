@@ -36,10 +36,11 @@
 
 #include <QElapsedTimer>
 
-//! CreateJobs will wait up to 2 minutes before timing out
-//! This shouldn't need to be so high but very large slices can take a while to process currently
-//! This should be reduced down to something more reasonable after slice jobs are sped up
-static const int s_MaximumCreateJobsTimeSeconds = 60 * 2;
+//! CreateJobs will wait up to 10 minutes before timing out. CreateJobs itself is fast,
+//! but when the machine is fully saturated with ProcessJob work (e.g. 60+ concurrent
+//! shader compiles at BelowNormal priority) the builder process handling CreateJobs can
+//! be starved of CPU for minutes at a time. Timeouts are also retried (see HandleConditionalRetry).
+static const int s_MaximumCreateJobsTimeSeconds = 60 * 10;
 
 //! ProcessJobs will wait up to 1 hour before timing out
 static const int s_MaximumProcessJobsTimeSeconds = 60 * 60;
@@ -1702,7 +1703,9 @@ bool ApplicationManagerBase::InitializeInternalBuilders()
 static void HandleConditionalRetry(const AssetProcessor::BuilderRunJobOutcome& result, int retryCount, AssetProcessor::BuilderRef& builderRef, AssetProcessor::BuilderPurpose purpose)
 {
     // If a lost connection occured or the process was terminated before a response can be read, and there is another retry to get the
-    // response from a Builder, then handle the logic to log and sleep before attempting the retry of the job
+    // response from a Builder, then handle the logic to log and sleep before attempting the retry of the job.
+    // A response timeout (ResponseFailure) is also retriable: under full machine saturation the builder process
+    // may simply be starved of CPU; the builder is terminated on timeout, so a new builder is acquired for the retry.
     if ((result == AssetProcessor::BuilderRunJobOutcome::LostConnection ||
          result == AssetProcessor::BuilderRunJobOutcome::ProcessTerminated ||
          result == AssetProcessor::BuilderRunJobOutcome::ResponseFailure) && (retryCount <= AssetProcessor::RetriesForJobLostConnection))
