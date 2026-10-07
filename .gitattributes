@@ -1,0 +1,2 @@
+# Captures for the #20000 split review. Plain blobs so raw.githubusercontent.com can serve them.
+*.png -filter -diff -merge
